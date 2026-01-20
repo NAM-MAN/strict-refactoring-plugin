@@ -1,0 +1,17 @@
+{
+  "name": "strict-refactoring-marketplace",
+  "owner": {
+    "name": "yy"
+  },
+  "metadata": {
+    "description": "厳格なリファクタリングルールを適用するプラグイン",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "strict-refactoring",
+      "source": ".",
+      "description": "早期リターン、Interface優先設計、Polymorphism、概念ベースのMECE構造化を適用するリファクタリングスキル"
+    }
+  ]
+}

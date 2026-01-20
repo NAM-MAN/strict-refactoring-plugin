@@ -1,0 +1,20 @@
+{
+  "name": "strict-refactoring",
+  "description": "厳格なリファクタリングルールを適用するスキル。早期リターン、Interface優先設計、Polymorphism、概念ベースのMECE構造化、小さな単一責任クラスの原則を徹底する。",
+  "version": "1.0.0",
+  "author": {
+    "name": "yy"
+  },
+  "license": "MIT",
+  "keywords": [
+    "refactoring",
+    "clean-code",
+    "architecture",
+    "oop",
+    "solid",
+    "ddd",
+    "screaming-architecture",
+    "mece"
+  ],
+  "category": "development-workflow"
+}
