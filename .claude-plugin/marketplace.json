@@ -10,8 +10,9 @@
   "plugins": [
     {
       "name": "strict-refactoring",
-      "source": ".",
-      "description": "早期リターン、Interface優先設計、Polymorphism、概念ベースのMECE構造化を適用するリファクタリングスキル"
+      "source": "./",
+      "description": "早期リターン、Interface優先設計、Polymorphism、概念ベースのMECE構造化を適用するリファクタリングスキル",
+      "strict": false
     }
   ]
 }
