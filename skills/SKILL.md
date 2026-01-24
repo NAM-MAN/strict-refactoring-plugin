@@ -1973,6 +1973,10 @@ if (retryCount > MAX_RETRY_COUNT) {
 }
 ```
 
+### 戻り値への適用
+
+戻り値における Primitive Obsession については Section 7.1 を参照。タプル `[A, B, C]` を返すことは、引数で `(a: A, b: B, c: C)` を受け取ることと同様の問題を持つ。
+
 ## 7. Parameters: Max 1-2
 
 引数は原則1-2個にせよ。3つ以上は Parameter Object にまとめよ。
@@ -1998,6 +2002,140 @@ interface ReservationData {
 
 function createReservation(data: ReservationData): void { /* ... */ }
 ```
+
+**戻り値のルール**: 引数と同様に、戻り値も複数の値を返す場合は名前付き型を使用せよ。詳細は Section 7.1 を参照。
+
+## 7.1 Return Values: Named Over Tuples
+
+戻り値が複数の値を含む場合、各値に名前を付けよ。生のタプルは原則禁止。
+
+### 禁止/許容の判断表
+
+| パターン | 可否 | 理由 |
+|---------|:----:|------|
+| 単一の値 (`Money`) | ✅ | 名前付け不要 |
+| 同種の配列 (`Employee[]`) | ✅ | 単一概念の集合 |
+| 名前付きオブジェクト (`{ start: Date, end: Date }`) | ✅ | 各値に名前あり |
+| 判別共用体 (`Result<T, E>`) | ✅ | `value`/`error` で名前付き |
+| 生タプル (`[Date, Date]`) | ❌ | 順序を覚える必要あり |
+| 生タプル (`[Money, string, boolean]`) | ❌ | 意味が不明確 |
+
+### 認知負荷の問題
+
+タプルの認知負荷は要素数に対して**二次的に増加**する:
+
+| 戻り値の型 | 覚えるべきこと |
+|-----------|---------------|
+| `Money` | 1（型のみ） |
+| `Employee[]` | 1（配列の要素型） |
+| `[A, B]` | 3（型A, 型B, 順序） |
+| `[A, B, C]` | 6（型A, 型B, 型C, 順序×3） |
+| `{ a: A, b: B }` | 2（プロパティ名で自己文書化） |
+
+### 特に危険: 同じ型のタプル
+
+```typescript
+// ❌ 禁止: どちらが start でどちらが end か不明
+function getDateRange(): [Date, Date]
+
+// ✅ 必須: 名前で明確化
+function getDateRange(): { start: Date; end: Date }
+```
+
+```typescript
+// ❌ 禁止: 座標の順序が不明
+function getPosition(): [number, number]
+
+// ✅ 必須: 名前で明確化
+function getPosition(): { x: number; y: number }
+```
+
+### 許容される例外
+
+| 例外 | 理由 | 例 |
+|------|------|-----|
+| 言語イディオム | Section 0.3 で定義済み | Go の `(T, error)` |
+| フレームワークAPI（境界層） | 外部APIの消費 | React hooks `[state, setState]` |
+| 内部実装 | 即時分解、private メソッド | `const [a, b] = line.split(',')` |
+
+#### 境界層での例外
+
+フレームワークが返すタプルの**消費**は許容。**作成**は禁止。
+
+```typescript
+// ✅ OK: フレームワークAPIの消費（境界層）
+const [state, formAction] = useActionState(submitRingi, null);
+
+// ❌ NG: 自作APIでタプルを返す
+function useRingiForm(): [RingiState, (data: RingiData) => void] {
+  // ...
+}
+
+// ✅ Good: 自作APIは名前付きオブジェクトを返す
+function useRingiForm(): { state: RingiState; submit: (data: RingiData) => void } {
+  // ...
+}
+```
+
+#### 内部実装での例外
+
+private メソッドや即時分解は許容。ただし、public API には適用しない。
+
+```typescript
+// ✅ OK: 内部での即時分解（外部に露出しない）
+private parseRow(line: string): void {
+  const [date, amount, description] = line.split(',');
+  // 即座に使用、外部に返さない
+}
+
+// ❌ NG: public メソッドでタプルを返す
+public parseRow(line: string): [Date, Money, string] {
+  // ...
+}
+
+// ✅ Good: public メソッドは名前付き型を返す
+public parseRow(line: string): ParsedTransaction {
+  const [date, amount, description] = line.split(',');
+  return new ParsedTransaction(
+    LocalDate.parse(date),
+    Money.of(Number(amount)),
+    description.trim()
+  );
+}
+```
+
+### Section 6 (Primitive Obsession) との関係
+
+タプル戻り値は**戻り値における Primitive Obsession** である。
+
+| Section 6 のルール | Section 7.1 への適用 |
+|-------------------|---------------------|
+| 単位がある値 → 専用型 | 複数の値 → 名前付き型 |
+| フォーマット制約 → 専用型 | 順序依存 → 名前付き型 |
+| 同じ型で意味が異なる → 専用型 | 同じ型のタプル → 名前付き型 |
+
+### Section 11 (Result型) との関係
+
+`Result<T, E>` は許容される理由:
+
+```typescript
+// Result は「名前付き」の判別共用体
+type Result<T, E> = 
+  | { ok: true; value: T }   // ← "value" という名前
+  | { ok: false; error: E }; // ← "error" という名前
+
+// 生タプルではない
+type BadResult<T, E> = [boolean, T | E]; // ❌ これは禁止
+```
+
+### 言語別の緩和
+
+| 言語 | 緩和ルール |
+|------|-----------|
+| Go | `(T, error)` パターンは許容（Section 0.3 で定義済み） |
+| Python | `tuple[A, B]` より `NamedTuple` または `dataclass` を推奨 |
+| Rust | `(A, B)` より `struct` を推奨。ただし `Result<T, E>` は標準 |
+| TypeScript | 生タプル禁止。`interface` または `type` で名前付け |
 
 ## 8. Directory Structure: Concept-based MECE Tree
 
@@ -3231,6 +3369,10 @@ class ConfirmOrder {
 - [ ] **Early Return**: else 句なしでガード節を使っているか
 - [ ] **単一責任**: メソッドは1つのことだけをしているか
 - [ ] **引数**: 2個以下か（多い場合はオブジェクトにまとめる）
+
+### 戻り値（Section 7.1）
+- [ ] **名前付き戻り値**: 複数の値を返す場合、各値に名前があるか（生タプル禁止）
+- [ ] **同型タプル禁止**: `[Date, Date]` のような同じ型のタプルを返していないか
 
 ### Polymorphism（Section 1.4, 1.8）
 - [ ] **ポリモーフィズム判断**: 各分岐で異なる計算ロジック or 独立テストが必要な場合のみか
