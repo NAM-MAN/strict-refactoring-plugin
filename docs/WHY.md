@@ -2571,7 +2571,504 @@ afterAll(async () => {
 
 ---
 
-## 7.2 依存分類別のテスト方法
+## 7.2 テスト形状の議論 — Pyramid vs Trophy vs Honeycomb vs Ice Cream
+
+テストをどのような「形」で構成すべきか。これは20年以上議論されているトピックです。
+
+### 4つの主要なモデル
+
+| モデル | 提唱者 | 形状 | 推奨比率 |
+|--------|--------|------|---------|
+| **① Test Pyramid** | Mike Cohn (2009) | △ ピラミッド | Unit 70% / Integration 20% / E2E 10% |
+| **② Testing Trophy** | Kent C. Dodds (2018) | 🏆 トロフィー | Static < Unit < Integration > E2E |
+| **③ Testing Honeycomb** | Spotify (2018) | 🍯 蜂の巣 | Implementation > Integration > Integrated |
+| **④ Ice Cream Cone** | アンチパターン | 🍦 逆ピラミッド | E2E多い / Unit少ない（やってはいけない） |
+
+---
+
+### ① Test Pyramid（Mike Cohn, 2009）
+
+```
+        /\
+       /E2E\        ← 少数（遅い、脆い）
+      /------\
+     /Integra-\     ← 中程度
+    /---tion---\
+   /-----------\
+  /    Unit     \   ← 大量（速い、安定）
+ /---------------\
+```
+
+**出典: "Succeeding with Agile" (Mike Cohn, 2009)**
+
+**主張:**
+- Unit テストを最も多く書け
+- 上に行くほどテストは遅く、脆く、高コスト
+- E2E は必要最低限に
+
+**この考え方が生まれた背景:**
+- 2009年当時、E2E テストは Selenium が主流で非常に遅かった
+- CI/CD がまだ一般的ではなく、テスト時間が大きな問題だった
+
+**批判（2018年以降）:**
+- 「Unit テストばかり書いても、統合時に壊れる」
+- 「Mockだらけのテストは実装詳細に依存しすぎ」
+
+---
+
+### ② Testing Trophy（Kent C. Dodds, 2018）
+
+```
+         🏆
+        /  \
+       / E2E \       ← 少数（重要なフロー）
+      /--------\
+     /          \
+    / Integration \  ← 最も多く（自信を与える）
+   /--------------\
+  /                \
+ /      Unit        \  ← 中程度（複雑なロジック）
+/--------------------\
+|      Static        |  ← 最初に（型、lint）
++--------------------+
+```
+
+**出典: Kent C. Dodds "Write tests. Not too many. Mostly integration."**
+
+**主張:**
+- Integration テストが最も「自信（confidence）」を与える
+- Unit テストは「複雑なビジネスロジック」にのみ書く
+- Mock を減らし、本物に近い環境でテスト
+
+**具体例（React Testing Library）:**
+```typescript
+// ❌ Implementation detail（Kent C. Dodds が批判するスタイル）
+test('ボタンクリックで state が変わる', () => {
+  const { result } = renderHook(() => useCounter());
+  act(() => result.current.increment());
+  expect(result.current.count).toBe(1);  // 内部 state をテスト
+});
+
+// ✅ Testing behavior（Kent C. Dodds が推奨するスタイル）
+test('ボタンクリックでカウントが表示される', () => {
+  render(<Counter />);
+  fireEvent.click(screen.getByRole('button', { name: 'Increment' }));
+  expect(screen.getByText('Count: 1')).toBeInTheDocument();
+  // ユーザーが見るものをテスト
+});
+```
+
+**批判:**
+- 「Integration テストは遅い。CI が長くなる」
+- 「バックエンドでは Unit テストの方が効率的なことが多い」
+
+---
+
+### ③ Testing Honeycomb（Spotify, 2018）
+
+```
+    +-------------------+
+    |    Integrated     |  ← 全システム結合（少数）
+    +-------------------+
+    |                   |
+    |   Integration     |  ← サービス間（中程度）
+    |                   |
+    +-------------------+
+    |                   |
+    |                   |
+    |  Implementation   |  ← 単一サービス内（大量）
+    |    (Unit-ish)     |
+    |                   |
+    +-------------------+
+```
+
+**出典: Spotify Engineering Blog "Testing of Microservices"**
+
+**主張:**
+- マイクロサービスでは「サービス間の契約」が重要
+- 単体テストよりも「サービス内結合テスト」を重視
+- Contract Testing（Pact等）でサービス間を検証
+
+**特徴:**
+- 「Unit Test」という言葉を避け「Implementation Test」と呼ぶ
+- モノリスには適用しにくい
+
+---
+
+### ④ Ice Cream Cone（アンチパターン）
+
+```
+   \_______________/
+    \   Manual    /   ← 手動テスト多い
+     \___________/
+      \  E2E   /      ← E2E 多い（遅い、脆い）
+       \_______/
+        \Int./        ← Integration 少ない
+         \__/
+          \/          ← Unit ほぼなし
+```
+
+**なぜアンチパターンか:**
+- E2E は遅い → CI が30分、1時間かかる
+- E2E は脆い → 無関係な変更で壊れる（flaky test）
+- 手動テストは再現性がない
+- バグの原因特定が困難（どこで壊れた？）
+
+**こうなる原因:**
+- 「とりあえず動くことを確認」でE2Eから書き始める
+- Unit テストの書き方を知らない
+- 「Unit テストは実装詳細のテストだから無駄」という誤解
+
+---
+
+### 本スキルの立場: Pyramid + Trophy のハイブリッド
+
+| テスト種別 | 比率 | 対象 |
+|-----------|------|------|
+| **Static** | - | TypeScript 型チェック、ESLint |
+| **Unit** | 50% | Pure Logic（Query, Transition）、複雑な計算 |
+| **Integration** | 40% | Command + InMemory Repository |
+| **E2E** | 10% | クリティカルパス（決済、認証）のみ |
+
+**なぜこの比率か:**
+
+1. **Unit 50%**: 本スキルは「Pure Logic を分離」するため、Unit テストが書きやすい
+2. **Integration 40%**: InMemory 実装により高速な Integration テストが可能
+3. **E2E 10%**: Playwright 等で重要フローのみ
+
+```typescript
+// Unit（50%）: Pure Logic
+test('税額を計算できる', () => {
+  const tax = new TaxOn(Money.of(1000), TaxRate.of(0.1));
+  expect(tax.amount.value).toBe(100);
+});
+
+// Integration（40%）: Command + InMemory
+test('稟議を申請できる', async () => {
+  const repository = new InMemoryRingiRepository();
+  const draft = new DraftRingi(id, data);
+  
+  await draft.submit(repository, clock);
+  
+  expect(await repository.findById(id)).not.toBeNull();
+});
+
+// E2E（10%）: クリティカルパスのみ
+test('ユーザーが注文を完了できる', async ({ page }) => {
+  await page.goto('/products');
+  await page.click('text=カートに追加');
+  await page.click('text=購入手続き');
+  // ...
+});
+```
+
+---
+
+## 7.3 テストサイズ分類 — Google 方式 vs 従来方式
+
+### 従来の分類: Unit / Integration / E2E
+
+| 名称 | 定義 |
+|------|------|
+| Unit | 単一クラス/関数のテスト |
+| Integration | 複数コンポーネントの結合テスト |
+| E2E | システム全体のテスト |
+
+**問題:** 定義が曖昧
+- 「Unit」の範囲は？クラス1つ？モジュール1つ？
+- 「Integration」でDBは使う？InMemory？
+
+---
+
+### Google Test Sizes: Small / Medium / Large
+
+**出典: Google Testing Blog "Test Sizes"**
+
+| Size | 制約 | 実行時間 | 外部リソース |
+|------|------|---------|-------------|
+| **Small** | 単一プロセス、単一スレッド | < 60秒 | ❌ 禁止 |
+| **Medium** | 単一マシン | < 300秒 | localhost のみ |
+| **Large** | 制限なし | 制限なし | 制限なし |
+
+**Small Test の制約:**
+- ネットワークアクセス禁止
+- ファイルI/O禁止（または /tmp のみ）
+- データベース禁止
+- Sleep 禁止
+
+**なぜこの分類が優れているか:**
+- 「何をテストするか」ではなく「どういう制約か」で分類
+- 明確な基準（曖昧さがない）
+- CI での並列実行が容易（Small は完全並列可能）
+
+---
+
+### t-wada 流の解釈
+
+**出典: t-wada（和田卓人）氏の講演・ブログ**
+
+| Google | 実質的な意味 | 本スキルとの対応 |
+|--------|-------------|-----------------|
+| Small | 外部リソースなし、純粋なロジック | Query, Transition のテスト |
+| Medium | localhost のDB、InMemory | Command + InMemory Repository |
+| Large | 本物の外部サービス | E2E、Contract Test |
+
+**t-wada 氏の主張:**
+> 「テストのサイズは実行速度と信頼性のトレードオフ。Small を多く、Large を少なく」
+
+---
+
+### 本スキルでの適用
+
+```typescript
+// Small Test: 外部リソースなし
+// Query, Transition は全て Small
+test('税額計算', () => {
+  expect(new TaxOn(Money.of(1000), TaxRate.of(0.1)).amount.value).toBe(100);
+});
+
+// Medium Test: InMemory Repository
+// Command は Medium（localhost の「メモリDB」相当）
+test('稟議申請', async () => {
+  const repository = new InMemoryRingiRepository();
+  await draft.submit(repository, clock);
+  expect(await repository.findById(id)).not.toBeNull();
+});
+
+// Large Test: 本物のDB、外部API
+// E2E、Testcontainers を使う統合テスト
+test('決済フロー', async () => {
+  const container = await new PostgreSqlContainer().start();
+  // ...
+});
+```
+
+---
+
+## 7.4 TDD のスタイル — London School vs Detroit/Chicago School
+
+### 2つの流派
+
+| 流派 | 別名 | アプローチ | Mock の使い方 |
+|------|------|-----------|--------------|
+| **London School** | Mockist | Outside-in（外から内へ） | 積極的に使う |
+| **Detroit/Chicago School** | Classicist | Inside-out（内から外へ） | 最小限に抑える |
+
+---
+
+### London School（Mockist）
+
+**代表: Steve Freeman, Nat Pryce — "Growing Object-Oriented Software, Guided by Tests" (GOOS)**
+
+**アプローチ:**
+1. 外側（API/UI）から設計を始める
+2. 内側のコンポーネントは Mock で代替
+3. 徐々に内側を実装
+
+```typescript
+// London School: Repository を Mock
+test('稟議を申請できる', async () => {
+  const mockRepository = {
+    save: jest.fn().mockResolvedValue(undefined),
+  };
+  
+  const draft = new DraftRingi(id, data);
+  await draft.submit(mockRepository, clock);
+  
+  expect(mockRepository.save).toHaveBeenCalledWith(
+    expect.objectContaining({ id, status: 'submitted' })
+  );
+});
+```
+
+**長所:**
+- 設計が API ファーストになる（使いやすいインターフェース）
+- テストが高速（外部依存なし）
+- 依存関係が明確になる
+
+**短所:**
+- Mock の設定が複雑になりがち
+- 実装詳細（`save` が呼ばれたか）に依存
+- リファクタリングでテストが壊れやすい
+
+---
+
+### Detroit/Chicago School（Classicist）
+
+**代表: Kent Beck — "Test-Driven Development: By Example"**
+
+**アプローチ:**
+1. 内側（ドメインロジック）から設計を始める
+2. 可能な限り本物のオブジェクトを使う
+3. Mock は外部システム（DB、API）にのみ使う
+
+```typescript
+// Detroit School: InMemory Repository を使う
+test('稟議を申請できる', async () => {
+  const repository = new InMemoryRingiRepository();
+  const draft = new DraftRingi(id, data);
+  
+  await draft.submit(repository, clock);
+  
+  const saved = await repository.findById(id);
+  expect(saved).not.toBeNull();
+  expect(saved!.status).toBe('submitted');
+});
+```
+
+**長所:**
+- テストが実装詳細に依存しない
+- リファクタリングしてもテストが壊れにくい
+- 「本当に保存された」ことを確認できる
+
+**短所:**
+- 設計が内部ロジックに引きずられる可能性
+- 大きな結合テストになりがち
+
+---
+
+### 本スキルの立場: Detroit School + Pending Object の組み合わせ
+
+**本スキルは Detroit School 寄り:**
+- InMemory 実装を使う（Mock より本物に近い）
+- 実装詳細（`save` が呼ばれたか）ではなく結果（保存された）を検証
+
+**ただし Pending Object Pattern との相性で修正:**
+- Outside-in の考え方も取り入れる（型で設計を駆動）
+- `DraftRingi` → `SubmittedRingi` という型遷移がテストを導く
+
+```typescript
+// 本スキルのスタイル: Detroit + 型駆動
+test('下書き稟議を申請すると、申請済み稟議が返る', async () => {
+  const repository = new InMemoryRingiRepository();
+  const draft = new DraftRingi(id, data);
+  
+  // 戻り値の型が SubmittedRingi であることがテストの本質
+  const submitted: SubmittedRingi = await draft.submit(repository, clock);
+  
+  expect(submitted.submittedAt).toEqual(clock.now());
+  expect(await repository.findById(id)).toEqual(submitted);
+});
+```
+
+---
+
+## 7.5 TDD 自体の是非 — "TDD is Dead" 論争
+
+### 論争の経緯
+
+**2014年: DHH（Ruby on Rails 作者）が "TDD is dead. Long live testing." を発表**
+
+**出典: DHH's blog "TDD is dead. Long live testing." (2014)**
+
+DHH の主張:
+> "Test-first fundamentalism is like abstinence-only sex education: An unrealistic, ineffective morality campaign for self-loathing and shaming."
+
+> "テストファースト原理主義は、禁欲主義のセックス教育のようなもの。非現実的で効果がなく、自己嫌悪と恥辱のキャンペーンだ"
+
+---
+
+### 主要な論点
+
+#### DHH の批判
+
+| 批判 | 説明 |
+|------|------|
+| **Test-induced design damage** | テストのために不自然な設計を強いられる |
+| **過剰なモック** | モックだらけのテストは実装詳細に依存 |
+| **遅いフィードバック** | テストを先に書くと開発が遅くなる |
+| **教条主義** | 「TDD しないと悪い開発者」という空気 |
+
+**DHH の代替案:**
+- テストは書く。ただし「テストファースト」にこだわらない
+- 統合テストを重視（Rails のシステムテスト）
+- 設計はテストのためではなく、ドメインのために
+
+---
+
+#### Kent Beck の反論
+
+**出典: Kent Beck, DHH, Martin Fowler による "Is TDD Dead?" 対談シリーズ (2014)**
+
+Kent Beck の立場:
+> "I practice TDD. I don't recommend TDD to others. It's like asking 'do you recommend tai chi?'"
+
+> "私は TDD を実践する。他人に TDD を勧めはしない。『太極拳を勧めますか？』と聞かれているようなものだ"
+
+**Beck の主張:**
+- TDD は「スキル」であり「宗教」ではない
+- 効果は個人差がある
+- 強制すべきではないが、学ぶ価値はある
+
+---
+
+#### Martin Fowler の中立的見解
+
+**Martin Fowler:**
+> "The problem is not TDD itself, but TDD done poorly."
+
+> "問題は TDD 自体ではなく、下手な TDD だ"
+
+**Fowler が指摘する「下手な TDD」:**
+- 実装詳細をテストする（Mock の乱用）
+- テストのためだけに設計を歪める
+- カバレッジ数値を目的化する
+
+---
+
+### "Test-induced design damage" とは
+
+DHH が指摘する「テストが設計を壊す」例:
+
+```ruby
+# ❌ テストのために不自然な依存注入
+class OrderProcessor
+  def initialize(payment_gateway, email_service, inventory_checker)
+    @payment_gateway = payment_gateway
+    @email_service = email_service
+    @inventory_checker = inventory_checker
+  end
+  
+  def process(order)
+    @inventory_checker.check(order)
+    @payment_gateway.charge(order)
+    @email_service.send_confirmation(order)
+  end
+end
+
+# DHH の主張: 「これはテストのためだけの設計。実際のRailsアプリでは
+# PaymentGateway.charge(order) と直接呼べばいい」
+```
+
+**反論（本スキルの立場）:**
+- 依存注入は「テストのため」ではなく「変更容易性のため」
+- ただし、フレームワークの流儀に従うことは許容する（NestJS の DI など）
+
+---
+
+### 本スキルの立場
+
+| 観点 | 本スキルの立場 |
+|------|---------------|
+| **TDD 必須か** | ❌ 強制しない。ただし「テストを書く」は必須 |
+| **テストファースト** | △ 推奨するが、後から書いても良い |
+| **Mock の使用** | △ 最小限に。InMemory 実装を優先 |
+| **カバレッジ目標** | △ 数値目標より「重要なロジックのカバー」を重視 |
+
+**なぜ TDD を強制しないか:**
+
+1. **スキルレベルの差**: TDD は習熟に時間がかかる。強制すると質が下がる
+2. **探索的開発**: 新しい領域を探索するときは、先にコードを書いた方が早いことがある
+3. **DHH の指摘は一理ある**: テストのために設計を歪めるのは本末転倒
+
+**ただし以下は守る:**
+- テストは必ず書く（後からでも）
+- Pure Logic（Query, Transition）は Unit テストが容易なので書く
+- Command は InMemory Repository で Integration テストを書く
+
+---
+
+## 7.6 依存分類別のテスト方法
 
 | 分類 | テスト方法 | モック | 例 |
 |------|-----------|:------:|-----|
@@ -2582,7 +3079,7 @@ afterAll(async () => {
 
 ---
 
-## 7.2 Test Data Factory
+## 7.7 Test Data Factory
 
 ### 問題: 共有フィクスチャ
 
@@ -2643,7 +3140,7 @@ test('特定の名前のユーザーを検索できる', () => {
 
 ---
 
-## 7.3 InMemory Repository
+## 7.8 InMemory Repository
 
 **InMemory Repository**とは、メモリ上で動作するテスト用のRepository実装です。
 
@@ -2684,7 +3181,7 @@ class InMemoryRingiRepository implements RingiRepository {
 
 ---
 
-## 7.4 Gateway パターン
+## 7.9 Gateway パターン
 
 外部サービス（Stripe、SendGrid、S3など）をInterfaceで抽象化し、テスト時に差し替え可能にします。
 
@@ -2714,6 +3211,506 @@ class FailingPaymentGateway implements PaymentGateway {
     return { success: false, error: 'カードが拒否されました' };
   }
 }
+```
+
+---
+
+# Part 8: 適用判断ガイド — いつ何を使うべきか
+
+## 8.1 CQRS — 90%のバックエンドには過剰
+
+### CQRS とは
+
+**CQRS（Command Query Responsibility Segregation）**とは、読み取り（Query）と書き込み（Command）を完全に分離するアーキテクチャです。
+
+```
+従来:
+┌─────────────────┐
+│   同じ Model    │ ← 読み書き両方
+└─────────────────┘
+
+CQRS:
+┌─────────────────┐     ┌─────────────────┐
+│  Write Model    │     │   Read Model    │
+│  (Command側)    │     │   (Query側)     │
+└─────────────────┘     └─────────────────┘
+        ↓                       ↓
+┌─────────────────┐     ┌─────────────────┐
+│   Write DB      │ ──→ │    Read DB      │
+│  (正規化)       │ sync│  (非正規化)     │
+└─────────────────┘     └─────────────────┘
+```
+
+---
+
+### なぜ CQRS が魅力的に見えるか
+
+| 主張 | 説明 |
+|------|------|
+| **スケーラビリティ** | 読み取りと書き込みを独立してスケール |
+| **最適化** | 読み取り用に非正規化した高速なモデル |
+| **複雑なクエリ** | 集計・検索に特化したモデルを持てる |
+
+---
+
+### なぜ 90% のバックエンドには過剰か
+
+**出典: Udi Dahan "CQRS – but different"**
+> "CQRS is not a top-level architecture. It is a pattern that applies to a very specific slice of your system."
+
+> "CQRS はトップレベルのアーキテクチャではない。システムの非常に特定の部分に適用されるパターンだ"
+
+**問題1: 複雑さの爆発**
+
+```
+単純なCRUD（CQRSなし）:
+- User モデル: 1つ
+- Repository: 1つ
+- テーブル: 1つ
+
+CQRS適用後:
+- UserWriteModel: 書き込み用
+- UserReadModel: 読み取り用
+- UserCommandRepository: 書き込み用
+- UserQueryRepository: 読み取り用
+- 同期処理: Write → Read の反映
+- 2つのテーブル、または2つのDB
+```
+
+**問題2: Eventual Consistency の罠**
+
+```typescript
+// ❌ よくある問題: ユーザー登録直後に「ユーザーが見つからない」
+async function registerUser(data: UserData) {
+  await commandService.createUser(data);  // Write DB に保存
+  
+  redirect('/users/' + data.id);  // Read DB を参照
+  // → "User not found" — 同期がまだ完了していない！
+}
+```
+
+**出典: Martin Fowler "CQRS"**
+> "For some situations, this kind of complexity is fine. For others, it's a significant burden that isn't worth the overhead."
+
+> "状況によってはこの複雑さは問題ない。しかし他の多くの場合、オーバーヘッドに見合わない重大な負担になる"
+
+**問題3: デバッグの困難**
+
+「なぜ Read Model のデータが古い？」
+- イベントが失われた？
+- 同期が遅延している？
+- バグ？
+
+---
+
+### CQRS を採用すべき場合
+
+| 状況 | 採用推奨度 |
+|------|:--------:|
+| 読み取りと書き込みのスケールが10倍以上違う | ✅ |
+| 複雑な検索・集計が頻繁にある（BIダッシュボード等） | ✅ |
+| イベントソーシングを既に採用している | ✅ |
+| 通常の CRUD アプリ | ❌ |
+| チームが CQRS 未経験 | ❌ |
+| MVP / プロトタイプ | ❌ |
+
+---
+
+### 本スキルとの関係
+
+本スキルの「4分類」は **CQRS ではない**:
+
+| 本スキル | CQRS |
+|---------|------|
+| 同じ Repository を使う | 別々の Repository（Write/Read） |
+| 同じ DB | 別々の DB（または別テーブル） |
+| 即時一貫性 | Eventual Consistency |
+| 責務の分類 | データストアの分離 |
+
+本スキルの Command/Query は「責務の明確化」であり、CQRSのような「物理的分離」ではありません。
+
+---
+
+## 8.2 DDD — 5% の複雑なアプリ向け
+
+### DDD とは
+
+**DDD（Domain-Driven Design）**とは、Eric Evans が2003年に提唱した、複雑なビジネスドメインに対処するための設計手法です。
+
+**主要な概念:**
+- Ubiquitous Language（ユビキタス言語）
+- Bounded Context（境界づけられたコンテキスト）
+- Aggregate（集約）
+- Entity / Value Object
+- Domain Event
+- Repository
+
+---
+
+### なぜ DDD が魅力的に見えるか
+
+| 主張 | 説明 |
+|------|------|
+| **ビジネスとコードの一致** | ドメインエキスパートと同じ言葉で話せる |
+| **複雑さの管理** | Bounded Context で複雑さを分割 |
+| **変更への強さ** | ビジネスルールがコードに明示される |
+
+---
+
+### なぜ 95% のアプリには過剰か
+
+**出典: Nick Tune "DDD is Overrated"**
+> "Most systems are simple CRUD apps where DDD adds unnecessary complexity. Reserve DDD for genuinely complex domains."
+
+> "ほとんどのシステムは単純な CRUD アプリであり、DDD は不必要な複雑さを追加する。DDD は本当に複雑なドメインのために取っておけ"
+
+**問題1: 「ドメインエキスパート」がいない**
+
+```
+DDD の前提:
+- ドメインエキスパートがいる
+- エキスパートと開発者が頻繁に対話する
+- ユビキタス言語を一緒に作る
+
+現実の多くのプロジェクト:
+- ドメインエキスパート = 忙しい営業部長（週1回30分だけ）
+- 要件 = Excel の仕様書
+- 「ユビキタス言語」を作る時間がない
+```
+
+**問題2: CRUD で十分なケースが多い**
+
+```typescript
+// ❌ DDD で設計すると...
+class User extends AggregateRoot {
+  private constructor(
+    private readonly id: UserId,
+    private readonly email: Email,
+    private readonly profile: UserProfile
+  ) {
+    super();
+  }
+  
+  static create(command: CreateUserCommand): User {
+    const user = new User(
+      UserId.generate(),
+      Email.of(command.email),
+      UserProfile.empty()
+    );
+    user.addDomainEvent(new UserCreatedEvent(user));
+    return user;
+  }
+  
+  updateProfile(command: UpdateProfileCommand): void {
+    this.profile.update(command);
+    this.addDomainEvent(new ProfileUpdatedEvent(this));
+  }
+}
+
+// ✅ CRUD で十分なケース
+class User {
+  constructor(
+    readonly id: string,
+    readonly email: string,
+    readonly name: string
+  ) {}
+}
+
+await db.users.insert({ id, email, name });
+```
+
+**問題3: Aggregate 設計の罠**
+
+「Aggregate の境界はどこ？」という議論で1週間が過ぎる。
+
+```typescript
+// Order と OrderItem は同じ Aggregate？
+// User と Order の関係は？
+// Payment は Order の一部？別 Aggregate？
+
+// → 正解がない。チームで延々と議論になる
+```
+
+---
+
+### DDD を採用すべき場合
+
+| 状況 | 採用推奨度 |
+|------|:--------:|
+| ドメインエキスパートと頻繁に対話できる | ✅ |
+| ビジネスルールが複雑（金融、保険、医療） | ✅ |
+| 長期運用（5年以上）が確定している | ✅ |
+| 単純な CRUD（管理画面、ブログ等） | ❌ |
+| MVP / プロトタイプ | ❌ |
+| チームが DDD 未経験 | △ （学習コストを覚悟） |
+
+---
+
+### 本スキルとの関係
+
+本スキルは **DDD の一部を取り入れている**:
+
+| 概念 | 本スキル | 完全な DDD |
+|------|---------|-----------|
+| Value Object | ✅ 採用 | ✅ |
+| Entity | △ 部分的（Pending Object） | ✅ |
+| Repository | ✅ 採用 | ✅ |
+| Aggregate | ❌ 不採用 | ✅ |
+| Bounded Context | ❌ 不採用 | ✅ |
+| Domain Event | ❌ 不採用 | ✅ |
+| Ubiquitous Language | △ 意識するが厳密ではない | ✅ |
+
+**本スキルの立場:** DDD の「良いとこ取り」。Value Object と Repository は汎用的に有用。Aggregate や Bounded Context は「本当に必要な時だけ」。
+
+---
+
+## 8.3 Microservices vs Monolith vs Modular Monolith
+
+### 3つのアーキテクチャ
+
+| アーキテクチャ | 概要 | デプロイ単位 |
+|--------------|------|-------------|
+| **Monolith** | 単一のコードベース、単一のデプロイ | 1つ |
+| **Microservices** | 機能ごとに独立したサービス | 多数 |
+| **Modular Monolith** | 単一デプロイだが内部はモジュール分離 | 1つ |
+
+---
+
+### なぜ Microservices が魅力的に見えるか
+
+| 主張 | 説明 |
+|------|------|
+| **独立デプロイ** | 1つのサービスだけ更新できる |
+| **技術選択の自由** | サービスごとに言語・DBを選べる |
+| **スケーラビリティ** | 必要なサービスだけスケール |
+| **障害分離** | 1つが落ちても全体は動く |
+
+---
+
+### なぜ多くのケースで失敗するか
+
+**出典: Amazon Prime Video "Scaling up the Prime Video audio/video monitoring service" (2023)**
+
+> "Microservices architecture wasn't delivering the cost savings we expected. Moving to a monolith reduced our infrastructure cost by over 90%."
+
+> "マイクロサービスアーキテクチャは期待したコスト削減を達成できなかった。モノリスに移行することで、インフラコストを90%以上削減できた"
+
+**Prime Video の事例:**
+- マイクロサービスで構築 → AWS Step Functions + Lambda
+- コストが高すぎた（サービス間通信、オーケストレーション）
+- モノリスに統合 → コスト 90% 削減
+
+**出典: Istio (Google) "Istio's move to a monolithic architecture"**
+
+> "The original microservices architecture, while theoretically pure, created operational complexity that slowed down development."
+
+> "元のマイクロサービスアーキテクチャは理論的には純粋だったが、開発を遅くする運用上の複雑さを生み出した"
+
+---
+
+### Microservices の隠れたコスト
+
+| コスト | 説明 |
+|--------|------|
+| **分散システムの複雑さ** | ネットワーク遅延、部分障害、冪等性 |
+| **データ一貫性** | 分散トランザクション、Saga パターン |
+| **運用負荷** | サービスごとに監視、ログ、デプロイパイプライン |
+| **テストの複雑さ** | サービス間の結合テスト、Contract Testing |
+| **チーム調整** | サービス間 API の変更調整 |
+
+```
+❌ よくある失敗パターン:
+
+1. 「マイクロサービスにしよう！」
+2. 5人のチームで10個のサービスを作る
+3. 1人が2サービス担当 → 「独立したチーム」の利点なし
+4. サービス間の調整に時間を取られる
+5. 結局モノリスより遅い
+```
+
+---
+
+### Modular Monolith という選択肢
+
+**出典: Shopify Engineering "Deconstructing the Monolith"**
+
+> "We didn't go microservices. We modularized our monolith. Each module has clear boundaries and can be extracted to a service if needed."
+
+> "マイクロサービスにはしなかった。モノリスをモジュール化した。各モジュールは明確な境界を持ち、必要に応じてサービスとして抽出できる"
+
+```
+Modular Monolith:
+┌─────────────────────────────────────┐
+│            単一アプリケーション        │
+│  ┌─────────┐ ┌─────────┐ ┌─────────┐ │
+│  │ Catalog │ │ Orders  │ │Payments │ │
+│  │ Module  │ │ Module  │ │ Module  │ │
+│  └─────────┘ └─────────┘ └─────────┘ │
+│       ↓           ↓           ↓      │
+│  ┌─────────────────────────────────┐ │
+│  │         共有 Database           │ │
+│  └─────────────────────────────────┘ │
+└─────────────────────────────────────┘
+
+モジュール間は明確なインターフェースで通信
+必要になったら Module → Service に抽出可能
+```
+
+---
+
+### 採用判断ガイド
+
+| 状況 | 推奨アーキテクチャ |
+|------|------------------|
+| スタートアップ、MVP | Monolith |
+| チーム5人以下 | Monolith |
+| チーム10-50人、複数ドメイン | Modular Monolith |
+| チーム50人以上、独立したプロダクト | Microservices |
+| 特定機能だけ別スケールが必要 | Monolith + 一部 Service 分離 |
+| 「Microservices がトレンドだから」 | ❌ Monolith で始めろ |
+
+---
+
+### 本スキルとの関係
+
+本スキルの Screaming Architecture は **Modular Monolith と相性が良い**:
+
+```
+✅ 本スキルの推奨構造（Screaming Architecture）
+src/
+├── catalog/      # 将来 Service に分離可能
+├── ordering/     # 将来 Service に分離可能
+├── payments/     # 将来 Service に分離可能
+└── shared/       # 共通コード（分離しない）
+```
+
+最初から「分離可能な構造」で作っておけば、本当に必要になった時だけ Microservices に移行できます。
+
+---
+
+## 8.4 コメント vs 自己文書化コード
+
+### 2つの考え方
+
+| 考え方 | 主張 |
+|--------|------|
+| **自己文書化コード派** | 良いコードはコメント不要。コメントは「コードの失敗」 |
+| **コメント重視派** | WHY は常にコメントで書くべき |
+
+---
+
+### Uncle Bob の主張
+
+**出典: Robert C. Martin "Clean Code" (2008)**
+
+> "Comments are always failures. We must have them because we cannot always figure out how to express ourselves without them, but their use is not a cause for celebration."
+
+> "コメントは常に失敗である。コメントなしで自分を表現する方法が分からないときに使わざるを得ないが、その使用は祝福すべきことではない"
+
+**Uncle Bob の立場:**
+- 良い名前を付ければコメントは不要
+- コメントは嘘をつく（コードと乖離する）
+- コメントは保守されない
+
+```java
+// ❌ コメントで説明（Uncle Bob が批判するスタイル）
+// Check if the user is eligible for the discount
+if (user.purchaseCount > 10 && user.memberSince.isBefore(oneYearAgo)) {
+  applyDiscount();
+}
+
+// ✅ 自己文書化（Uncle Bob が推奨するスタイル）
+if (user.isEligibleForLoyaltyDiscount()) {
+  applyDiscount();
+}
+```
+
+---
+
+### 批判と反論
+
+**問題: WHY は名前だけでは表現できない**
+
+```typescript
+// ✅ これは自己文書化できる（WHAT）
+function calculateTax(price: Money, rate: TaxRate): Money {
+  return price.multiply(rate.value);
+}
+
+// ❌ これは自己文書化では表現できない（WHY）
+// なぜ 1.08 ではなく 1.1 なのか？
+// → 2024年の法改正で税率が変わったから
+// → この情報はメソッド名では表現できない
+```
+
+**出典: Jeff Atwood "Coding Horror" - "Code Tells You How, Comments Tell You Why"**
+
+> "Code can only tell you HOW the program works. Comments can tell you WHY."
+
+> "コードは HOW（どう動くか）しか伝えられない。コメントは WHY（なぜそうするか）を伝えられる"
+
+---
+
+### 本スキルの立場
+
+| 種類 | コメント | 理由 |
+|------|:------:|------|
+| **WHAT（何をしているか）** | ❌ 不要 | コード自体で表現すべき |
+| **HOW（どう動くか）** | ❌ 不要 | コード自体で表現すべき |
+| **WHY（なぜそうするか）** | ✅ 必要 | コードでは表現できない |
+| **WARNING（注意事項）** | ✅ 必要 | 落とし穴の警告 |
+| **TODO** | △ 一時的 | Issue に移行すべき |
+
+---
+
+### 良いコメントの例
+
+```typescript
+// ✅ WHY: ビジネス上の理由
+// 2024年4月の法改正により、消費税率が10%から11%に変更
+// 施行日: 2024-04-01
+// 参照: https://example.com/tax-law-2024
+const TAX_RATE = 0.11;
+
+// ✅ WARNING: 落とし穴の警告
+// ⚠️ この API は1秒あたり10リクエストの制限がある
+// 制限を超えると 429 が返る
+// 参照: https://api.example.com/docs/rate-limits
+await externalApi.fetch(data);
+
+// ✅ WHY: 非自明な設計判断
+// なぜ Redis ではなく PostgreSQL をキャッシュに使うのか:
+// 1. 既存インフラで Redis がない
+// 2. キャッシュ更新頻度が低い（1日1回）
+// 3. PostgreSQL の UNLOGGED TABLE で十分な性能
+class PostgresCacheRepository implements CacheRepository {
+  // ...
+}
+```
+
+---
+
+### 悪いコメントの例
+
+```typescript
+// ❌ WHAT: コードを読めば分かる
+// ユーザーを取得する
+const user = await userRepository.findById(id);
+
+// ❌ 嘘のコメント（コードと乖離）
+// 税率10%で計算
+const tax = price * 0.11;  // 実際は11%
+
+// ❌ コメントアウトされたコード
+// function oldCalculation() {
+//   return price * 0.08;
+// }
+
+// ❌ 意味のないコメント
+// ----------------
+// User Class
+// ----------------
+class User {
 ```
 
 ---
