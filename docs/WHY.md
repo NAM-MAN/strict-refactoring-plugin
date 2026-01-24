@@ -1679,6 +1679,12 @@ enum Color { RED, GREEN, BLUE }
 type Result<T, E> = 
   | { ok: true; value: T }   // 成功時: ok が true で value に結果
   | { ok: false; error: E }; // 失敗時: ok が false で error にエラー情報
+
+// ヘルパー関数（コード例で使用）
+const Result = {
+  ok: <T>(value: T): Result<T, never> => ({ ok: true, value }),
+  err: <E>(error: E): Result<never, E> => ({ ok: false, error }),
+};
 ```
 
 ### なぜ Result 型なのか — 5つの代替案との比較
@@ -1954,7 +1960,8 @@ if (!result3.ok) return result3;
 **対処: ヘルパー関数**
 
 ```typescript
-// ✅ andThen でチェーン
+// ✅ andThen でチェーン（Result をクラスとして実装した場合）
+// 注: プレーンなオブジェクト型ではなく、メソッドを持つクラスが必要
 const finalResult = result1
   .andThen(step2)
   .andThen(step3);
@@ -1972,7 +1979,8 @@ if (!result.ok) return result;
 **対処: AsyncResult ヘルパー**
 
 ```typescript
-// ✅ AsyncResult
+// ✅ AsyncResult（別途実装が必要なヘルパークラス）
+// 注: neverthrow, fp-ts 等のライブラリを使うか、自前で実装
 const result = await AsyncResult
   .from(asyncStep1())
   .andThen(asyncStep2)
@@ -2852,6 +2860,9 @@ test('稟議を申請できる', async () => {
     save: jest.fn().mockResolvedValue(undefined),
     findById: jest.fn().mockResolvedValue(null),
   };
+  const clock = new FixedClock(new Date('2024-01-15T10:00:00Z'));
+  const id = new RingiId('ringi-001');
+  const data = { title: 'テスト稟議', amount: 10000 };
   
   const draft = new DraftRingi(id, data);
   await draft.submit(mockRepository, clock);
@@ -2968,14 +2979,16 @@ class InMemoryRingiRepository implements RingiRepository {
 // ✅ InMemory を使ったテスト
 test('稟議を申請できる', async () => {
   const repository = new InMemoryRingiRepository();
+  const clock = new FixedClock(new Date('2024-01-15T10:00:00Z'));
+  const id = new RingiId('ringi-001');
+  const data = { title: 'テスト稟議', amount: 10000 };
   const draft = new DraftRingi(id, data);
   
   const submitted = await draft.submit(repository, clock);
   
-  // 実際に保存されたことを確認
+  // 実際に保存されたことを確認（型で状態を表現）
   const saved = await repository.findById(id);
-  expect(saved).not.toBeNull();
-  expect(saved.status).toBe('submitted');
+  expect(saved).toBeInstanceOf(SubmittedRingi);
 });
 ```
 
@@ -3199,6 +3212,9 @@ test('税額を計算できる', () => {
 // Integration（40%）: Command + InMemory
 test('稟議を申請できる', async () => {
   const repository = new InMemoryRingiRepository();
+  const clock = new FixedClock(new Date('2024-01-15T10:00:00Z'));
+  const id = new RingiId('ringi-001');
+  const data = { title: 'テスト稟議', amount: 10000 };
   const draft = new DraftRingi(id, data);
   
   await draft.submit(repository, clock);
@@ -3284,6 +3300,10 @@ test('税額計算', () => {
 // Command は Medium（localhost の「メモリDB」相当）
 test('稟議申請', async () => {
   const repository = new InMemoryRingiRepository();
+  const clock = new FixedClock(new Date('2024-01-15T10:00:00Z'));
+  const id = new RingiId('ringi-001');
+  const data = { title: 'テスト稟議', amount: 10000 };
+  const draft = new DraftRingi(id, data);
   await draft.submit(repository, clock);
   expect(await repository.findById(id)).not.toBeNull();
 });
@@ -3324,12 +3344,15 @@ test('稟議を申請できる', async () => {
   const mockRepository = {
     save: jest.fn().mockResolvedValue(undefined),
   };
+  const clock = new FixedClock(new Date('2024-01-15T10:00:00Z'));
+  const id = new RingiId('ringi-001');
+  const data = { title: 'テスト稟議', amount: 10000 };
   
   const draft = new DraftRingi(id, data);
   await draft.submit(mockRepository, clock);
   
   expect(mockRepository.save).toHaveBeenCalledWith(
-    expect.objectContaining({ id, status: 'submitted' })
+    expect.any(SubmittedRingi)
   );
 });
 ```
@@ -3359,13 +3382,15 @@ test('稟議を申請できる', async () => {
 // Detroit School: InMemory Repository を使う
 test('稟議を申請できる', async () => {
   const repository = new InMemoryRingiRepository();
+  const clock = new FixedClock(new Date('2024-01-15T10:00:00Z'));
+  const id = new RingiId('ringi-001');
+  const data = { title: 'テスト稟議', amount: 10000 };
   const draft = new DraftRingi(id, data);
   
   await draft.submit(repository, clock);
   
   const saved = await repository.findById(id);
-  expect(saved).not.toBeNull();
-  expect(saved!.status).toBe('submitted');
+  expect(saved).toBeInstanceOf(SubmittedRingi);
 });
 ```
 
@@ -3394,6 +3419,9 @@ test('稟議を申請できる', async () => {
 // 本スキルのスタイル: Detroit + 型駆動
 test('下書き稟議を申請すると、申請済み稟議が返る', async () => {
   const repository = new InMemoryRingiRepository();
+  const clock = new FixedClock(new Date('2024-01-15T10:00:00Z'));
+  const id = new RingiId('ringi-001');
+  const data = { title: 'テスト稟議', amount: 10000 };
   const draft = new DraftRingi(id, data);
   
   // 戻り値の型が SubmittedRingi であることがテストの本質
