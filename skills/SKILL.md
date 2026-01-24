@@ -2487,7 +2487,35 @@ const Result = {
 };
 ```
 
-#### ヘルパー関数
+#### なぜ Result はクラスではなく関数ベースか
+
+Result 型は例外的に関数ベースで実装する。理由:
+
+| 観点 | クラスベース | 判別共用体 + 関数 |
+|------|-------------|------------------|
+| **型の絞り込み** | ❌ 手動で型ガード必要 | ✅ `if (result.ok)` で自動 |
+| **シリアライズ** | ❌ 復元時に型情報消失 | ✅ `JSON.stringify/parse` でそのまま |
+| **例外の排除** | ❌ getter で throw しがち | ✅ 例外なし |
+
+```typescript
+// クラスベースの問題点
+class ResultClass<T, E> {
+  get value(): T { 
+    if (!this._ok) throw new Error(); // ← 例外を避けるための Result なのに例外!
+    return this._value!;              // ← 非null アサーション（型安全性が失われる）
+  }
+}
+
+// 判別共用体の利点
+const result = DraftRingi.create(data);
+if (result.ok) {
+  result.value; // ✅ TypeScript が自動で型を絞り込む
+}
+```
+
+これは「OOP 主軸」の例外であり、**代数的データ型（ADT）には関数型アプローチが適切**であることを示している。
+
+#### ヘルパー関数（Advanced）
 
 ```typescript
 // map: 成功値を変換
@@ -2537,29 +2565,115 @@ return match(result, {
 });
 ```
 
-#### どちらを使うか
+#### 推奨: if チェック（Early Return）
 
 | パターン | 推奨度 | 理由 |
 |---------|--------|------|
-| **if チェック** | 推奨 | 誰でも読める、デバッグしやすい |
-| **andThen チェーン** | 許容 | チームが慣れていれば簡潔 |
+| **if チェック** | ✅ 推奨 | 誰でも読める、デバッグしやすい、Early Return と一貫 |
+| **andThen チェーン** | ⚠️ Advanced | チーム**全員**が習熟している場合のみ |
 
 ```typescript
-// ✅ 推奨: if チェック（明示的）
+// ✅ 推奨: if チェック（明示的、デバッグしやすい）
 const validation = validateRingiInput(req.body);
 if (!validation.ok) return handleError(validation.error);
 
 const draftResult = DraftRingi.create(RingiId.generate(), validation.value);
 if (!draftResult.ok) return handleError(draftResult.error);
 
-// ✅ 許容: andThen チェーン（簡潔だがチーム習熟が必要）
+const submitted = await draftResult.value.submit(repository, clock);
+```
+
+**`if` チェックを推奨する理由:**
+1. **Early Return パターン（Section 4）との一貫性**
+2. **デバッグのしやすさ**: ブレークポイントを置きやすい
+3. **認知負荷の低さ**: チームの最も経験の浅いメンバーでも読める
+4. **型の絞り込み**: `if (result.ok)` で TypeScript が自動的に型を絞り込む
+
+#### Advanced: andThen チェーン（オプション）
+
+以下のヘルパー関数は**チーム全員が Railway Oriented Programming を理解している場合のみ**使用せよ。
+
+```typescript
+// ⚠️ Advanced: andThen チェーン（チーム習熟が前提）
 const result = andThen(
   validateRingiInput(req.body),
   v => DraftRingi.create(RingiId.generate(), v)
 );
+
+if (!result.ok) {
+  return handleError(result.error);
+}
 ```
 
+**使用条件:**
+- チーム全員が `map`, `andThen`, `match` の意味を理解している
+- コードレビューで「これ何？」と聞かれない自信がある
+
 **注意:** neverthrow や fp-ts は導入しない。学習コストを考慮し、上記の軽量な実装で十分。
+
+### 11.1.2 interface vs type の使い分け
+
+TypeScript では `interface` と `type` のどちらでもオブジェクトの形状を定義できるが、用途に応じて使い分けよ。
+
+| 用途 | 推奨 | 理由 |
+|------|------|------|
+| **ADT（判別共用体）** | `type` | 共用体（`\|`）との親和性、閉じた型 |
+| **Intersection（`&`）で拡張** | `type` | 自然な構文 |
+| **クラスが `implements` する契約** | `interface` | `implements` が使える |
+| **オブジェクトの形状定義（単純）** | どちらでもOK | チームで統一 |
+
+**判断フロー:**
+```
+この型は...
+├─ 判別共用体（`|` で結合）の一部？ → type
+├─ Intersection（`&`）で拡張？ → type
+├─ クラスが `implements` する？ → interface
+└─ 上記いずれでもない → どちらでもOK（チームで統一）
+```
+
+**なぜ ADT には `type` か:**
+
+```typescript
+// ✅ type: ADT に適している
+type DomainErrorBase = {
+  readonly _tag: string;
+  readonly code: string;
+  readonly message: string;
+};
+
+type ValidationError = DomainErrorBase & {
+  readonly _tag: 'ValidationError';
+  readonly violations: ValidationViolation[];
+};
+
+type DomainError = ValidationError | NotFoundError | ConflictError;
+```
+
+```typescript
+// ❌ interface: Declaration merging が可能（ADT では危険）
+interface DomainErrorBase {
+  readonly _tag: string;
+}
+
+// 別ファイルで誰かが勝手に拡張できてしまう
+interface DomainErrorBase {
+  readonly extraField: string; // ← 意図しない拡張
+}
+```
+
+**クラスの契約には `interface`:**
+
+```typescript
+// ✅ interface: クラスが実装する契約
+interface RingiRepository {
+  save(ringi: Ringi): Promise<void>;
+  findById(id: RingiId): Promise<Ringi | null>;
+}
+
+class PostgresRingiRepository implements RingiRepository {
+  // ...
+}
+```
 
 ### 11.2 エラー型の分類
 
@@ -2575,12 +2689,12 @@ const result = andThen(
 | `code` | 具体的なエラー識別子 | `'RINGI_NOT_FOUND'` | ログ、モニタリング、フロントエンド |
 
 ```typescript
-// エラーの基本構造
-interface DomainErrorBase {
+// エラーの基本構造（type を使用。理由は Section 11.1.2 参照）
+type DomainErrorBase = {
   readonly _tag: string;      // 基底エラー型（HTTP ステータス決定用）
   readonly code: string;      // 具体的なエラーコード（識別用）
   readonly message: string;   // 人間可読メッセージ
-}
+};
 
 // 具体的なエラー型
 type ValidationError = DomainErrorBase & {
