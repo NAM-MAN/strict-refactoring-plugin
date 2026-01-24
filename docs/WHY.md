@@ -1074,7 +1074,124 @@ new User({
 
 ## 2.2 依存の4分類と生成方針
 
-クラスが使う「依存」（他のクラスやリソース）は4種類に分類できます：
+### なぜ4分類なのか — テスタビリティからの導出
+
+依存の分類は「テスト時に差し替えが必要か？」という基準から導出されます：
+
+| 分類 | テスト時に差し替え必要？ | 理由 | 生成方法 |
+|------|:----------------------:|------|---------|
+| **Pure Logic** | ❌ | 常に同じ結果を返す | コンストラクタ内で `new` |
+| **Configured Logic** | ❌ | 環境ごとに設定を切り替えればよい | Config経由で内部生成 |
+| **External Resource** | ✅ | 本物のDBを使いたくない | メソッド引数で受け取る |
+| **Non-deterministic** | ✅ | 時刻を固定したい、乱数を制御したい | メソッド引数で受け取る |
+
+この分類の本質は「**テストで差し替えが必要なもの**だけを外部から注入する」ことです。
+
+差し替え不要なもの（Pure Logic, Configured Logic）まで外部注入すると：
+- テストで不要なモックを作る羽目になる
+- 依存グラフが複雑化する
+- コードの可読性が下がる
+
+逆に、差し替え必要なもの（External Resource, Non-deterministic）を内部生成すると：
+- テストで本物のDBにアクセスしてしまう
+- テスト結果が非決定的になる（時刻依存で落ちるテスト）
+- テストの実行が遅くなる
+
+---
+
+### なぜメソッドインジェクションか — 核心的理由
+
+**ドメインオブジェクトは `new` で作りたい。**
+
+これが核心です。DIコンテナはサービス層のオブジェクトを管理するものであり、ドメインオブジェクト（Entity, Value Object）は `new DraftRingi(data)` のように手動で生成します。
+
+```typescript
+// ドメインオブジェクトは new で作る（DIコンテナの外）
+const draft = new DraftRingi(data);
+
+// では Repository をどうやって渡す？
+// → メソッド引数で渡す
+await draft.submit(repository, clock);
+```
+
+Factoryパターンで Repository を渡す方法もありますが：
+
+```typescript
+// Factory が増殖する問題
+class RingiFactory {
+  createDraft(data) { }
+  createFromTemplate(template) { }
+  createCopy(original) { }
+  createAndSubmit(data) { }
+  // どんどん膨らむ...
+}
+```
+
+メソッド引数なら Factory の増殖を避けられます。
+
+---
+
+### DDD との緊張関係（正直に認める）
+
+正統派DDDでは「**Entity は Repository を知らない**」が原則です：
+
+```typescript
+// 正統派DDD: Entity は Repository を知らない
+class DraftRingi {
+  // Repository を引数に取らない
+}
+
+// Domain Service が Repository を使う
+class RingiSubmissionService {
+  constructor(private readonly repository: RingiRepository) {}
+  
+  async submit(draft: DraftRingi): Promise<SubmittedRingi> {
+    // ロジックはここ
+  }
+}
+```
+
+本スキルは **Rich Domain Model**（ドメインオブジェクト自身がロジックを持つ）を優先します：
+
+```typescript
+// 本スキル: Entity がロジックを持つ
+class DraftRingi {
+  async submit(repository: RingiRepository, clock: Clock): Promise<SubmittedRingi> {
+    // ロジックがここにある
+  }
+}
+```
+
+これはトレードオフです：
+
+| アプローチ | メリット | デメリット |
+|-----------|---------|-----------|
+| 正統派DDD（Domain Service） | DDD教科書通り、Entity が純粋 | ロジックが分散しやすい |
+| 本スキル（Rich Domain Model） | ロジックが Entity に集約 | Entity が Repository を知る |
+
+本スキルが Rich Domain Model を選ぶ理由：
+- 「稟議を申請する」ロジックは `DraftRingi` に書くのが自然
+- 「どこを見ればロジックがあるか」が明確
+- Anemic Domain Model（貧血ドメインモデル）を避けられる
+
+---
+
+### このパターンが適さないケース
+
+メソッドインジェクションが適さない場面もあります：
+
+| ケース | なぜ適さないか | 代替案 |
+|--------|---------------|--------|
+| **複数Aggregate Root の協調** | 1つの Entity が複数の Repository を知るのは責務過剰 | Application Service |
+| **トランザクション境界の制御** | Entity がトランザクションを意識すべきでない | Application Service / Unit of Work |
+| **複雑なワークフロー** | 分岐が多すぎて Entity が肥大化 | Saga / Process Manager |
+| **外部システムとのオーケストレーション** | API呼び出しの順序制御が複雑 | Application Service |
+
+これらのケースでは、正統派DDDの Domain Service や Application Service を使う方が適切です。
+
+---
+
+### 4分類テーブル（まとめ）
 
 | 分類 | 定義 | 例 | 生成方法 |
 |------|------|-----|---------|
@@ -1082,6 +1199,8 @@ new User({
 | **Configured Logic** | 設定値に依存、常に同じ結果 | RateCalculator(rate: 0.1) | Config経由で内部生成 |
 | **External Resource** | 外部リソースにアクセス | Repository, API Client | メソッド引数で受け取る |
 | **Non-deterministic** | 実行ごとに結果が変わる | Clock（現在時刻）, Random | メソッド引数で受け取る |
+
+---
 
 ### なぜ「メソッド引数で受け取る」なのか — 4つの代替案との比較
 
