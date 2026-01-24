@@ -56,9 +56,9 @@ func NewPendingReservation(data ReservationData) (*PendingReservation, error) {
     return &PendingReservation{data: data}, nil
 }
 
-func (p *PendingReservation) Confirm(store ReservationStore) (*Reservation, error) {
+func (p *PendingReservation) Confirm(repo ReservationRepository) (*Reservation, error) {
     reservation := NewReservation(p.data)
-    if err := store.Save(reservation); err != nil {
+    if err := repo.Save(reservation); err != nil {
         return nil, err
     }
     return reservation, nil
@@ -1013,7 +1013,7 @@ class ApproveRingiUseCase {
 | Controller | HTTPメソッドによる分岐 | フレームワークの制約 |
 | Mapper | JSON値 → enum変換 | 外部形式の吸収 |
 | Resolver | Strategy選択 | 条件に基づく実装の選択 |
-| Store実装 | DB行 → Entity変換 | 技術詳細の隠蔽 |
+| Repository実装 | DB行 → Entity変換 | 技術詳細の隠蔽 |
 
 ```typescript
 // ✅ OK: 境界層での分岐（Mapper）
@@ -1513,11 +1513,11 @@ class PendingOrder {
     this.validator = new OrderValidator(config.validationRules);
   }
 
-  async confirm(store: OrderStore): Promise<Order> {
+  async confirm(repository: OrderRepository): Promise<Order> {
     // External Resource: メソッド引数で受け取る
     this.validator.validate(this.data);
     const order = Order.fromData(this.data);
-    await store.save(order);
+    await repository.save(order);
     return order;
   }
 }
@@ -1583,13 +1583,13 @@ describe("ExpenseValidator", () => {
 // DraftExpenseReport の統合テスト（Validator をモックしない）
 describe("DraftExpenseReport", () => {
   it("有効な経費精算を申請できる", async () => {
-    const report = await new DraftExpenseReport(validItems, config).submit(mockStore);
+    const report = await new DraftExpenseReport(validItems, config).submit(mockRepository);
     expect(report.status).toBe(ExpenseStatus.SUBMITTED);
   });
 
   it("無効な経費を含む場合は申請を拒否する", async () => {
     await expect(
-      new DraftExpenseReport(invalidItems, config).submit(mockStore)
+      new DraftExpenseReport(invalidItems, config).submit(mockRepository)
     ).rejects.toThrow(ValidationError);
   });
 });
@@ -1605,7 +1605,7 @@ describe("経費精算の上限チェック", () => {
     const config: ExpenseConfig = { maxAmountPerItem: Money.of(50_000) };
     const items = [new ExpenseItem({ amount: Money.of(30_000) })];
     
-    const report = await new DraftExpenseReport(items, config).submit(mockStore);
+    const report = await new DraftExpenseReport(items, config).submit(mockRepository);
     expect(report.status).toBe(ExpenseStatus.SUBMITTED);
   });
 
@@ -1614,7 +1614,7 @@ describe("経費精算の上限チェック", () => {
     const items = [new ExpenseItem({ amount: Money.of(60_000) })];
     
     await expect(
-      new DraftExpenseReport(items, config).submit(mockStore)
+      new DraftExpenseReport(items, config).submit(mockRepository)
     ).rejects.toThrow("1件あたりの上限を超えています");
   });
 });
@@ -1782,16 +1782,15 @@ Test Data Factory はテストと同じディレクトリに配置せよ（Secti
 
 ```
 src/
+├── MoneyTestFactory.ts           ← 複数ドメインで使用 → src/ 直下
 ├── ringis/
 │   ├── DraftRingi.ts
 │   ├── DraftRingi.test.ts
 │   └── RingiTestFactory.ts      ← テストと同じディレクトリ
-├── expenses/
-│   ├── ExpenseReport.ts
-│   ├── ExpenseReport.test.ts
-│   └── ExpenseTestFactory.ts
-└── shared/
-    └── MoneyTestFactory.ts      ← 複数ドメインで使用する場合
+└── expenses/
+    ├── ExpenseReport.ts
+    ├── ExpenseReport.test.ts
+    └── ExpenseTestFactory.ts
 ```
 
 #### テストデータ戦略の優先順位
@@ -2118,7 +2117,7 @@ src/
 
 **Colocation ルール:**
 - テストダブルは `__tests__/doubles/` に配置
-- 複数モジュールで共有する場合のみ `src/shared/__tests__/doubles/` に移動
+- 複数モジュールで共有する場合は共通の親ディレクトリに配置（例: `src/__tests__/doubles/`）
 - 共有化は「3箇所以上で使用」を目安とする
 
 #### 2.5.7 統合テスト・Contract Test
@@ -2237,7 +2236,7 @@ class DraftExpenseReport {
     this.policyChecker = new ExpensePolicyChecker(config);
   }
 
-  async submit(store: ExpenseReportStore, clock: Clock): Promise<SubmittedExpenseReport> {
+  async submit(repository: ExpenseReportRepository, clock: Clock): Promise<SubmittedExpenseReport> {
     // Pure Logic: バリデーション
     for (const item of this.items) {
       if (!this.validator.isValid(item)) {
@@ -2260,7 +2259,7 @@ class DraftExpenseReport {
     });
 
     // External Resource: メソッド引数で永続化
-    await store.save(report);
+    await repository.save(report);
     return report;
   }
 }
@@ -2272,7 +2271,7 @@ const config: ExpenseReportConfig = {
   requiresReceipt: true,
 };
 const report = await new DraftExpenseReport(items, currentUser, config)
-  .submit(expenseStore, systemClock);
+  .submit(expenseRepository, systemClock);
 ```
 
 ## 3. Interface優先、継承禁止
@@ -3972,7 +3971,7 @@ class ConfirmOrder {
 
 ---
 
-## クイックチェックリスト（23項目）
+## クイックチェックリスト（29項目）
 
 コードレビュー時に使用。詳細は各 Section を参照。
 
@@ -4010,7 +4009,7 @@ class ConfirmOrder {
 - [ ] **InfrastructureError**: 外部ライブラリのエラーは `extends Error` で例外か
 - [ ] **境界層**: InfrastructureError を catch して Result に変換しているか
 
-### ディレクトリ（Section 10）
+### ディレクトリ（Section 8）
 - [ ] **機能ベース**: 技術層ではなく機能でディレクトリを分けているか
 - [ ] **5つルール**: 各ディレクトリの直接の子は5つ以下か
 
