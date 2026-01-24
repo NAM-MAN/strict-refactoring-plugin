@@ -1697,6 +1697,215 @@ describe("請求書発行", () => {
 | 統合 | Command | Repository, Gateway のみ |
 | E2E | ユースケース全体 | なし（実環境） |
 
+### 2.4.1 テストデータ戦略
+
+#### 禁止事項
+
+| 禁止 | 理由 |
+|------|------|
+| **静的 Fixtures** (YAML/JSON ファイル) | テスト間の結合、メンテナンス困難 |
+| **共有 Seeds** (アプリ起動時投入) | 暗黙の依存、変更影響の予測困難 |
+| **テスト間でのデータ共有** | 独立性の欠如 |
+
+**例外**: 不変の参照データ（国コード、通貨コード等）は Seeds を許容。ただし、テストで変更してはならない。
+
+#### 推奨パターン: Test Data Factory
+
+テストデータは **Test Data Factory** パターンで作成せよ。各テストが自身のデータを作成・管理する。
+
+```typescript
+// tests/ringis/RingiTestFactory.ts
+export class RingiTestFactory {
+  private static readonly DEFAULTS: RingiData = {
+    title: 'テスト稟議',
+    amount: Money.of(10000),
+    status: RingiStatus.DRAFT,
+  };
+
+  static draft(overrides?: Partial<RingiData>): DraftRingi {
+    const id = RingiId.generate();
+    const data = { ...RingiTestFactory.DEFAULTS, ...overrides };
+    return DraftRingi.create(id, data).value;
+  }
+
+  static submitted(overrides?: Partial<RingiData>): SubmittedRingi {
+    const draft = RingiTestFactory.draft(overrides);
+    return draft.toSubmitted(new FixedClock(new Date()));
+  }
+}
+
+// テストでの使用
+it('承認できる', async () => {
+  const ringi = RingiTestFactory.submitted({ amount: Money.of(50000) });
+  const repository = new InMemoryRingiRepository();
+  
+  const result = await ringi.approve(repository);
+  
+  expect(result.status).toBe(RingiStatus.APPROVED);
+});
+```
+
+#### Factory の設計ルール
+
+| ルール | 説明 |
+|--------|------|
+| **Aggregate Root 単位** | 1 Factory = 1 Aggregate Root |
+| **状態ごとにメソッド分離** | `draft()`, `submitted()`, `approved()` |
+| **条件分岐禁止** | Factory 内に if/switch を書かない |
+| **20行以内** | 超える場合は Aggregate が複雑すぎる |
+| **明示的な依存** | 他の Factory を暗黙的に呼ばない |
+
+```typescript
+// ❌ Bad: 条件分岐を含む Factory
+const createRingi = (type: 'draft' | 'submitted') => {
+  if (type === 'draft') { ... }
+  else { ... }
+};
+
+// ❌ Bad: 暗黙的な依存
+const createRingi = async () => {
+  const applicant = await EmployeeTestFactory.create(); // 暗黙的!
+  return { applicantId: applicant.id, ... };
+};
+
+// ✅ Good: 状態ごとにメソッド分離、明示的な依存
+class RingiTestFactory {
+  static draft(overrides?) { ... }
+  static submitted(overrides?) { ... }
+  static withApplicant(applicant: Employee, overrides?) { ... }
+}
+```
+
+#### コロケーション
+
+Test Data Factory はテストと同じディレクトリに配置せよ（Section 8 のコロケーションルールに従う）。
+
+```
+src/
+├── ringis/
+│   ├── DraftRingi.ts
+│   ├── DraftRingi.test.ts
+│   └── RingiTestFactory.ts      ← テストと同じディレクトリ
+├── expenses/
+│   ├── ExpenseReport.ts
+│   ├── ExpenseReport.test.ts
+│   └── ExpenseTestFactory.ts
+└── shared/
+    └── MoneyTestFactory.ts      ← 複数ドメインで使用する場合
+```
+
+#### テストデータ戦略の優先順位
+
+| 優先度 | 戦略 | 使用場面 |
+|:------:|------|---------|
+| 1 | **インラインリテラル** | 単純なテスト |
+| 2 | **Test Data Factory** | 複雑なドメインオブジェクト |
+| 3 | **InMemory Repository** | Command のテスト |
+| 4 | **Testcontainers** | ReadModel、SQL検証 |
+| 5 | ~~共有 Fixtures~~ | **使用禁止** |
+
+```typescript
+// 優先度 1: インラインリテラル（単純なテスト）
+it('金額が正しく計算される', () => {
+  const tax = new ConsumptionTaxOn(Money.of(1000)).amount();
+  expect(tax).toEqual(Money.of(100));
+});
+
+// 優先度 2: Test Data Factory（複雑なオブジェクト）
+it('承認フローが正しく動作する', async () => {
+  const ringi = RingiTestFactory.submitted({ amount: Money.of(50000) });
+  // ...
+});
+
+// 優先度 3: InMemory Repository（Command のテスト）
+it('申請後にRepositoryに保存される', async () => {
+  const repository = new InMemoryRingiRepository();
+  const draft = RingiTestFactory.draft();
+  await draft.submit(repository, clock);
+  expect(await repository.findById(draft.id)).toBeDefined();
+});
+
+// 優先度 4: Testcontainers（ReadModel、SQL検証）
+it('複雑なクエリが正しく動作する', async () => {
+  const container = await PostgresTestContainer.start();
+  // SQL固有の挙動を検証
+});
+```
+
+#### DB統合テストのガイドライン
+
+| クラス分類 | 推奨テスト方式 | DB必要？ |
+|-----------|---------------|:--------:|
+| Query | 純粋単体テスト | ❌ |
+| Transition | 純粋単体テスト | ❌ |
+| Command | InMemory Repository | ❌ |
+| ReadModel | Testcontainers | ✅ |
+| Repository実装 | Testcontainers | ✅ |
+
+**原則**: 大半のテストは DB 不要。ReadModel と Repository 実装のテストのみ実 DB を使用。
+
+#### テスト分離の実現
+
+DB統合テストでは、トランザクションロールバックでテスト間の分離を実現。
+
+```typescript
+describe('RingiApproval', () => {
+  let tx: Transaction;
+  
+  beforeEach(async () => {
+    tx = await testDb.beginTransaction();
+  });
+  
+  afterEach(async () => {
+    await tx.rollback();
+  });
+  
+  it('承認後にステータスが更新される', async () => {
+    // Arrange
+    const ringi = await RingiTestFactory.insertSubmitted(tx, { 
+      amount: Money.of(50000) 
+    });
+    
+    // Act
+    await approveRingi(ringi.id, tx);
+    
+    // Assert
+    const updated = await findRingi(ringi.id, tx);
+    expect(updated.status).toBe(RingiStatus.APPROVED);
+  });
+});
+```
+
+#### InMemory Repository の必須化
+
+**すべての Repository Interface に対応する InMemory 実装を用意せよ。**
+
+```typescript
+// Interface（ドメイン層）
+interface RingiRepository {
+  save(ringi: Ringi): Promise<void>;
+  findById(id: RingiId): Promise<Ringi | null>;
+}
+
+// 本番実装（インフラ層）
+class PostgresRingiRepository implements RingiRepository { ... }
+
+// テスト実装（テストディレクトリ）
+class InMemoryRingiRepository implements RingiRepository {
+  private ringis = new Map<string, Ringi>();
+  
+  async save(ringi: Ringi): Promise<void> {
+    this.ringis.set(ringi.id.value, ringi);
+  }
+  
+  async findById(id: RingiId): Promise<Ringi | null> {
+    return this.ringis.get(id.value) ?? null;
+  }
+}
+```
+
+これにより、Command のテストは DB 接続なしで実行可能になる。
+
 ### 2.5 完全な実装例
 
 ```typescript
@@ -3393,5 +3602,8 @@ class ConfirmOrder {
 - [ ] **機能ベース**: 技術層ではなく機能でディレクトリを分けているか
 - [ ] **5つルール**: 各ディレクトリの直接の子は5つ以下か
 
-### テスト（Section 2.4）
+### テスト（Section 2.4, 2.4.1）
 - [ ] **Pure Logic**: 依存クラス自体の単体テストがあるか（親でモック不要に）
+- [ ] **テストデータ独立性**: 各テストが自身のデータを作成・クリーンアップしているか（Fixtures禁止）
+- [ ] **Factory配置**: Test Data Factory がテストとコロケーションされているか
+- [ ] **InMemory実装**: すべての Repository に InMemory 実装が存在するか
