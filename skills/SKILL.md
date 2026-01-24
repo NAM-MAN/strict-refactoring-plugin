@@ -1906,7 +1906,305 @@ class InMemoryRingiRepository implements RingiRepository {
 
 これにより、Command のテストは DB 接続なしで実行可能になる。
 
-### 2.5 完全な実装例
+### 2.5 外部サービスのテスト戦略
+
+外部サービス（S3、SendGrid、Stripe等）との連携は **Gateway パターン** で抽象化し、テスト種別に応じた適切なテストダブルを選択する。
+
+#### 2.5.1 Gateway パターン
+
+外部サービスへの依存は必ず Gateway interface で抽象化する。
+
+```typescript
+// ❌ Bad: 外部SDKを直接使用
+class DocumentService {
+  constructor(private readonly s3Client: S3Client) {}
+  
+  async upload(file: File): Promise<string> {
+    await this.s3Client.send(new PutObjectCommand({...}));
+    // ...
+  }
+}
+
+// ✅ Good: Gateway で抽象化
+interface FileStorageGateway {
+  upload(file: File): Promise<FileUrl>;
+  download(url: FileUrl): Promise<File>;
+  delete(url: FileUrl): Promise<void>;
+}
+
+class DocumentService {
+  constructor(private readonly storage: FileStorageGateway) {}
+  
+  async upload(file: File): Promise<FileUrl> {
+    return this.storage.upload(file);
+  }
+}
+
+// 本番実装
+class S3FileStorageGateway implements FileStorageGateway {
+  constructor(private readonly s3Client: S3Client) {}
+  
+  async upload(file: File): Promise<FileUrl> {
+    await this.s3Client.send(new PutObjectCommand({...}));
+    return FileUrl.of(`s3://bucket/${file.name}`);
+  }
+  // ...
+}
+```
+
+#### 2.5.2 テストダブル選択マトリクス
+
+| サービス種別 | 例 | 単体テスト | 統合テスト |
+|-------------|-----|-----------|-----------|
+| **ステートフル Storage** | S3, GCS, Azure Blob | **Fake** (InMemory) | LocalStack / Testcontainers |
+| **メッセージキュー** | SQS, RabbitMQ, Kafka | **Fake** (InMemory) | LocalStack / Testcontainers |
+| **通知系** | SendGrid, Twilio, FCM | **Mock** (呼び出し検証) | MailHog（optional） |
+| **課金/決済** | Stripe, PayPal | **Stub** (固定応答) | Sandbox + Contract Test |
+| **外部API** | 天気API, 地図API | **Stub** (固定応答) | Contract Test |
+
+**選択基準:**
+- **Fake**: 状態を持つサービス。InMemory実装でロジックを再現
+- **Mock**: 「呼ばれたこと」の検証が重要。状態は不要
+- **Stub**: 外部の応答形式が重要。固定レスポンスを返す
+
+#### 2.5.3 Fake 実装例（ステートフル Storage）
+
+```typescript
+// src/documents/__tests__/doubles/InMemoryFileStorageGateway.ts
+// テストダブルは対象モジュール内に colocation
+
+export class InMemoryFileStorageGateway implements FileStorageGateway {
+  private readonly files = new Map<string, Buffer>();
+
+  async upload(file: File): Promise<FileUrl> {
+    const url = FileUrl.of(`memory://${file.name}`);
+    this.files.set(url.value, file.content);
+    return url;
+  }
+
+  async download(url: FileUrl): Promise<File> {
+    const content = this.files.get(url.value);
+    if (!content) {
+      throw new FileNotFoundError(url);
+    }
+    return new File(url.fileName, content);
+  }
+
+  async delete(url: FileUrl): Promise<void> {
+    this.files.delete(url.value);
+  }
+
+  // テスト用ヘルパー
+  clear(): void {
+    this.files.clear();
+  }
+
+  has(url: FileUrl): boolean {
+    return this.files.has(url.value);
+  }
+}
+```
+
+#### 2.5.4 Mock 実装例（通知系）
+
+```typescript
+// src/notifications/__tests__/doubles/MockEmailGateway.ts
+
+export class MockEmailGateway implements EmailGateway {
+  private readonly sentEmails: Email[] = [];
+
+  async send(email: Email): Promise<void> {
+    this.sentEmails.push(email);
+  }
+
+  // 検証用メソッド
+  wasSentTo(address: EmailAddress): boolean {
+    return this.sentEmails.some(e => e.to.equals(address));
+  }
+
+  sentCount(): number {
+    return this.sentEmails.length;
+  }
+
+  lastSentEmail(): Email | undefined {
+    return this.sentEmails.at(-1);
+  }
+
+  clear(): void {
+    this.sentEmails.length = 0;
+  }
+}
+
+// テストでの使用
+describe("OrderConfirmationService", () => {
+  it("注文確定時に確認メールを送信する", async () => {
+    const emailGateway = new MockEmailGateway();
+    const service = new OrderConfirmationService(emailGateway);
+
+    await service.confirm(order);
+
+    expect(emailGateway.wasSentTo(order.customer.email)).toBe(true);
+    expect(emailGateway.lastSentEmail()?.subject).toContain("ご注文確認");
+  });
+});
+```
+
+#### 2.5.5 Stub 実装例（課金/決済）
+
+```typescript
+// src/payments/__tests__/doubles/StubPaymentGateway.ts
+
+export class StubPaymentGateway implements PaymentGateway {
+  private nextResponse: PaymentResult = PaymentResult.success("stub-charge-id");
+
+  async charge(amount: Money, card: CardToken): Promise<PaymentResult> {
+    return this.nextResponse;
+  }
+
+  // テスト用: 次の応答を設定
+  willSucceed(chargeId: string = "stub-charge-id"): void {
+    this.nextResponse = PaymentResult.success(chargeId);
+  }
+
+  willFail(reason: PaymentFailureReason): void {
+    this.nextResponse = PaymentResult.failure(reason);
+  }
+
+  willTimeout(): void {
+    this.nextResponse = PaymentResult.timeout();
+  }
+}
+
+// テストでの使用
+describe("CheckoutService", () => {
+  it("決済失敗時にカード拒否エラーを返す", async () => {
+    const paymentGateway = new StubPaymentGateway();
+    paymentGateway.willFail(PaymentFailureReason.CARD_DECLINED);
+    
+    const service = new CheckoutService(paymentGateway);
+    const result = await service.checkout(cart, card);
+
+    expect(result.isFailure()).toBe(true);
+    expect(result.error).toBeInstanceOf(CardDeclinedError);
+  });
+});
+```
+
+#### 2.5.6 テストダブルの配置（Colocation）
+
+```
+src/
+├── documents/
+│   ├── DocumentService.ts
+│   ├── FileStorageGateway.ts          # Interface
+│   ├── S3FileStorageGateway.ts        # 本番実装
+│   └── __tests__/
+│       ├── DocumentService.test.ts
+│       └── doubles/
+│           └── InMemoryFileStorageGateway.ts  # Fake
+├── notifications/
+│   ├── EmailGateway.ts
+│   ├── SendGridEmailGateway.ts
+│   └── __tests__/
+│       └── doubles/
+│           └── MockEmailGateway.ts    # Mock
+└── payments/
+    ├── PaymentGateway.ts
+    ├── StripePaymentGateway.ts
+    └── __tests__/
+        └── doubles/
+            └── StubPaymentGateway.ts  # Stub
+```
+
+**Colocation ルール:**
+- テストダブルは `__tests__/doubles/` に配置
+- 複数モジュールで共有する場合のみ `src/shared/__tests__/doubles/` に移動
+- 共有化は「3箇所以上で使用」を目安とする
+
+#### 2.5.7 統合テスト・Contract Test
+
+**統合テスト（LocalStack / Testcontainers）:**
+
+```typescript
+// src/documents/__tests__/S3FileStorageGateway.integration.test.ts
+import { S3Client } from "@aws-sdk/client-s3";
+import { GenericContainer, StartedTestContainer } from "testcontainers";
+
+describe("S3FileStorageGateway Integration", () => {
+  let container: StartedTestContainer;
+  let gateway: S3FileStorageGateway;
+
+  beforeAll(async () => {
+    container = await new GenericContainer("localstack/localstack")
+      .withExposedPorts(4566)
+      .start();
+    
+    const s3Client = new S3Client({
+      endpoint: `http://localhost:${container.getMappedPort(4566)}`,
+      // ...
+    });
+    gateway = new S3FileStorageGateway(s3Client);
+  }, 60000);
+
+  afterAll(async () => {
+    await container.stop();
+  });
+
+  it("ファイルをアップロードしてダウンロードできる", async () => {
+    const file = new File("test.txt", Buffer.from("hello"));
+    
+    const url = await gateway.upload(file);
+    const downloaded = await gateway.download(url);
+    
+    expect(downloaded.content.toString()).toBe("hello");
+  });
+});
+```
+
+**Contract Test（外部API）:**
+
+```typescript
+// src/payments/__tests__/StripePaymentGateway.contract.test.ts
+// Stripe Sandbox を使用した Contract Test
+
+describe("StripePaymentGateway Contract", () => {
+  const gateway = new StripePaymentGateway(process.env.STRIPE_TEST_KEY!);
+
+  it("テストカードで決済が成功する", async () => {
+    const result = await gateway.charge(
+      Money.of(1000, "JPY"),
+      CardToken.of("tok_visa")  // Stripe テストトークン
+    );
+    
+    expect(result.isSuccess()).toBe(true);
+  });
+
+  it("拒否カードで決済が失敗する", async () => {
+    const result = await gateway.charge(
+      Money.of(1000, "JPY"),
+      CardToken.of("tok_chargeDeclined")
+    );
+    
+    expect(result.isFailure()).toBe(true);
+    expect(result.error.reason).toBe(PaymentFailureReason.CARD_DECLINED);
+  });
+});
+```
+
+**テスト実行の分離:**
+
+```json
+// package.json
+{
+  "scripts": {
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:contract": "vitest run --config vitest.contract.config.ts"
+  }
+}
+```
+
+### 2.6 完全な実装例
 
 ```typescript
 // Immutable Config
@@ -3674,7 +3972,7 @@ class ConfirmOrder {
 
 ---
 
-## クイックチェックリスト（20項目）
+## クイックチェックリスト（23項目）
 
 コードレビュー時に使用。詳細は各 Section を参照。
 
@@ -3716,8 +4014,11 @@ class ConfirmOrder {
 - [ ] **機能ベース**: 技術層ではなく機能でディレクトリを分けているか
 - [ ] **5つルール**: 各ディレクトリの直接の子は5つ以下か
 
-### テスト（Section 2.4, 2.4.1）
+### テスト（Section 2.4, 2.4.1, 2.5）
 - [ ] **Pure Logic**: 依存クラス自体の単体テストがあるか（親でモック不要に）
 - [ ] **テストデータ独立性**: 各テストが自身のデータを作成・クリーンアップしているか（Fixtures禁止）
 - [ ] **Factory配置**: Test Data Factory がテストとコロケーションされているか
 - [ ] **InMemory実装**: すべての Repository に InMemory 実装が存在するか
+- [ ] **Gateway抽象化**: 外部サービス（S3, SendGrid, Stripe等）は Gateway interface で抽象化されているか
+- [ ] **テストダブル選択**: Fake（ステートフル）/ Mock（通知）/ Stub（決済）を適切に選択しているか
+- [ ] **テストダブル配置**: テストダブルは `__tests__/doubles/` にコロケーションされているか
