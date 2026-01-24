@@ -2,6 +2,28 @@
 
 Claude Code 用の厳格なリファクタリングスキルプラグイン。
 
+## ドキュメント
+
+| ドキュメント | 説明 | 対象読者 |
+|-------------|------|---------|
+| [**WHY.md**](docs/WHY.md) | 各ルールの「なぜ」を解説（4,600行） | 初学者〜中級者 |
+| [**SKILL.md**](skills/SKILL.md) | ルール定義・実装パターン（3,000行） | AI / 上級者 |
+| [examples/](examples/) | プロジェクト別CLAUDE.md例 | 全員 |
+
+### WHY.md の構成
+
+| Part | 内容 |
+|------|------|
+| Part 0 | 前提知識（OOP/関数型基礎、凝集度/結合度、SOLID、Code Smells） |
+| Part 1 | 4分類（Command / Transition / Query / ReadModel） |
+| Part 2 | 完全コンストラクタと依存生成 |
+| Part 3 | Polymorphism（多態性） |
+| Part 4 | エラー処理（Result型） |
+| Part 5 | 設計ルール集（継承禁止、Early Return、Tell Don't Ask、Law of Demeter等） |
+| Part 6 | アーキテクチャ（Screaming Architecture、MECE Tree） |
+| Part 7 | テスト戦略（InMemory実装、TDD論争、テスト形状） |
+| Part 8 | 適用判断ガイド（CQRS/DDD/Microservices） |
+
 ## 概要
 
 コードレビュー、リファクタリング、設計相談の際に、以下の原則を徹底的に適用します：
