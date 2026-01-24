@@ -177,7 +177,7 @@ src/
 
 ### Entity名（日英対応）
 
-| 日本語 | English Class | Store |
+| 日本語 | English Class | Repository |
 |--------|---------------|-------|
 {entityNamingTable}
 
@@ -209,27 +209,36 @@ src/{domain}/{subdomain}/
 | 種別 | 対象 | モック |
 |------|------|--------|
 | 単体 | Query, Pure Logic | なし |
-| 統合 | Command | Store (InMemory) |
+| 統合 | Command | Repository (InMemory) |
 | E2E | ユースケース全体 | なし（実環境） |
 
-### テスト用 Fixture
+### Test Data Factory
+
+Test Data Factory はテストと同じディレクトリに配置（colocation）:
+
+```
+src/{domain}/
+├── Draft{Entity}.ts
+├── Draft{Entity}.test.ts
+└── {Entity}TestFactory.ts    ← テストと同じディレクトリ
+```
 
 ```typescript
-// _fixtures/{Entity}Fixtures.ts
-export const {Entity}Fixtures = {
-  draft{Entity}: (overrides?: Partial<{Entity}Data>) => new Draft{Entity}({
+// {Entity}TestFactory.ts
+export const {Entity}TestFactory = {
+  draft: (overrides?: Partial<{Entity}Data>) => new Draft{Entity}({
     // デフォルト値
     ...overrides,
   }),
   
-  pending{Entity}: (overrides?: Partial<{Entity}Data>) => /* ... */,
+  pending: (overrides?: Partial<{Entity}Data>) => /* ... */,
 };
 ```
 
-### テストダブル（InMemory Store）
+### テストダブル（InMemory Repository）
 
 ```typescript
-class InMemory{Entity}Store implements {Entity}Store {
+class InMemory{Entity}Repository implements {Entity}Repository {
   private entities = new Map<string, {Entity}>();
 
   async save(entity: {Entity}): Promise<void> {
@@ -600,8 +609,8 @@ interface TenantScoped {
   readonly {tenantKey}: {TenantId};
 }
 
-// Store は必ずテナントでフィルタ
-interface {Entity}Store {
+// Repository は必ずテナントでフィルタ
+interface {Entity}Repository {
   findById(id: {Entity}Id, tenant: {TenantId}): Promise<{Entity} | null>;
   save(entity: {Entity}): Promise<void>;
 }
@@ -660,7 +669,7 @@ interface {Entity}Store {
 ### {Entity名} 関連の変更時
 
 - [ ] 状態遷移図と整合しているか
-- [ ] {Entity}Store の操作を使用しているか
+- [ ] {Entity}Repository の操作を使用しているか
 - [ ] テストを更新したか
 ```
 
@@ -681,7 +690,7 @@ interface {Entity}Store {
 ├── {domain}/                    # {日本語名}
 │   ├── {subdomain1}/           #   {サブドメイン説明}
 │   │   ├── {Entity}.ts
-│   │   ├── {Entity}Store.ts
+│   │   ├── {Entity}Repository.ts
 │   │   └── {Entity}.test.ts
 │   └── {subdomain2}/
 │       └── ...
@@ -705,9 +714,9 @@ class {状態}{Entity} {
     // バリデーション
   }
 
-  async {action}(store: {Entity}Store): Promise<{次状態}{Entity}> {
+  async {action}(repository: {Entity}Repository): Promise<{次状態}{Entity}> {
     const entity = {次状態}{Entity}.from{状態}(this.data);
-    await store.save(entity);
+    await repository.save(entity);
     return entity;
   }
 }
