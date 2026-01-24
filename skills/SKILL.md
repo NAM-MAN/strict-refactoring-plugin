@@ -3151,23 +3151,36 @@ describe("請求書発行", () => {
 });
 ```
 
-### 9.5 テストピラミッド
+### 9.5 テスト戦略（Pyramid + Trophy ハイブリッド）
+
+本スキルは Test Pyramid（Mike Cohn）と Testing Trophy（Kent C. Dodds）のハイブリッドを採用。
 
 ```
-         /\
-        /E2E\          <- 最小限（主要フロー）
-       /------\
-      / 統合   \       <- Command のテスト（Repository モック）
-     /----------\
-    /   単体     \     <- Pure Logic, Query のテスト
-   /--------------\
+    [Static: TypeScript 型チェック, ESLint]
+              /\
+             /E2E\          <- 10%（クリティカルパスのみ）
+            /------\
+           / 統合   \       <- 40%（Command + InMemory Repository）
+          /----------\
+         /   単体     \     <- 50%（Pure Logic: Query, Transition）
+        /--------------\
 ```
 
-| テスト種類 | 対象 | モック |
-|-----------|------|--------|
-| 単体 | Query, Pure Logic 依存 | なし |
-| 統合 | Command | Repository, Gateway のみ |
-| E2E | ユースケース全体 | なし（実環境） |
+| テスト種別 | 比率 | 対象 | モック |
+|-----------|:----:|------|--------|
+| **Static** | - | TypeScript 型チェック、ESLint | - |
+| **単体** | 50% | Query, Transition, Pure Logic | なし |
+| **統合** | 40% | Command + InMemory Repository | InMemory 実装のみ |
+| **E2E** | 10% | クリティカルパス（決済、認証） | なし（実環境） |
+
+**なぜこの比率か:**
+- **Unit 50%**: 本スキルは「Pure Logic を分離」するため Unit テストが書きやすい
+- **Integration 40%**: InMemory 実装により高速な Integration テストが可能
+- **E2E 10%**: Playwright 等で重要フローのみ（コスト高のため最小限）
+
+**Trophy からの採用:**
+- Static Analysis を最初の防衛線として位置づけ
+- Integration テストを重視（実際の結合動作を確認）
 
 ### 9.6 テストデータ戦略
 
