@@ -71,9 +71,10 @@
 
 | 用語 | 意味 |
 |------|------|
-| **モック（Mock）** | テスト用の偽物。本物のDBやAPIの代わりに使う |
-| **スタブ（Stub）** | 決まった値を返すだけの偽物 |
+| **モック（Mock）** | テスト用の偽物。**呼び出しを検証する**（何回呼ばれたか、どんな引数か） |
+| **スタブ（Stub）** | テスト用の偽物。**決まった値を返す**だけで、呼び出しは検証しない |
 | **フィクスチャ** | テストで使うサンプルデータ |
+| **InMemory実装** | 本物と同じインターフェースを持つ、メモリ上で動作するテスト用実装 |
 
 ---
 
@@ -188,521 +189,13 @@ class User {
 
 ---
 
-## 0.5 凝集度と結合度（Cohesion and Coupling）
-
-### なぜこれが最も重要な概念なのか
-
-**凝集度**と**結合度**は、ソフトウェア設計における最も基礎的な品質指標です。1974年にLarry ConstantineとEdward Yourdonが提唱して以来、50年間変わらず設計の根幹を成しています。
-
-**ミノ駆動本（成瀬允宣『良いコード/悪いコードで学ぶ設計入門』）** でも、凝集度と結合度は全ルールの根拠として繰り返し登場します。
-
-| 指標 | 定義 | 良い状態 | 悪い状態 |
-|------|------|---------|---------|
-| **凝集度（Cohesion）** | クラス内の要素がどれだけ密接に関連しているか | 高凝集（High Cohesion） | 低凝集（Low Cohesion） |
-| **結合度（Coupling）** | クラス間がどれだけ依存し合っているか | 低結合（Loose Coupling） | 高結合（Tight Coupling） |
-
-**目標は「高凝集・低結合」です。**
-
-### 高凝集（High Cohesion）
-
-**高凝集**とは、「1つのクラスが1つの責務に集中している」状態です。
-
-```typescript
-// ❌ 低凝集: 複数の責務が混在
-class UserManager {
-  validateEmail(email: string): boolean { /* ... */ }
-  hashPassword(password: string): string { /* ... */ }
-  sendWelcomeEmail(user: User): void { /* ... */ }
-  calculateLoyaltyPoints(user: User): number { /* ... */ }
-  generateReport(users: User[]): string { /* ... */ }
-}
-
-// ✅ 高凝集: 各クラスが1つの責務に集中
-class EmailValidator { validate(email: string): boolean { /* ... */ } }
-class PasswordHasher { hash(password: string): string { /* ... */ } }
-class WelcomeEmailSender { send(user: User): void { /* ... */ } }
-class LoyaltyPointsCalculator { calculate(user: User): number { /* ... */ } }
-class UserReportGenerator { generate(users: User[]): string { /* ... */ } }
-```
-
-**なぜ高凝集が良いのか:**
-- 変更理由が1つ → 変更時に他の機能に影響しない
-- クラス名を見れば何をするか分かる
-- テストが書きやすい（責務が明確）
-
-### 低結合（Loose Coupling）
-
-**低結合**とは、「クラス間の依存が最小限」な状態です。
-
-```typescript
-// ❌ 高結合: OrderService が MySQL の内部実装に依存
-class OrderService {
-  constructor(private mysqlConnection: MySQLConnection) {}
-  
-  save(order: Order): void {
-    // MySQL 固有の SQL を直接実行
-    this.mysqlConnection.query(`INSERT INTO orders VALUES (...)`)
-  }
-}
-
-// ✅ 低結合: インターフェースに依存
-interface OrderRepository {
-  save(order: Order): Promise<void>
-}
-
-class OrderService {
-  save(order: Order, repository: OrderRepository): Promise<void> {
-    return repository.save(order)
-  }
-}
-```
-
-**なぜ低結合が良いのか:**
-- 依存先を差し替えられる（MySQL → PostgreSQL）
-- テスト時にモックを注入できる
-- 変更の影響範囲が限定される
-
-### 本スキルの4分類と凝集度の関係
-
-本スキルの4分類（Command / Transition / Query / ReadModel）は、**凝集度を最大化する設計パターン**です：
-
-| 分類 | 責務 | 凝集度への貢献 |
-|------|------|--------------|
-| **Command** | 副作用を実行する | 副作用を1箇所に集約（他のクラスは副作用を持たない） |
-| **Transition** | 状態遷移ロジック | ビジネスロジックを1箇所に集約 |
-| **Query** | 純粋な計算 | 入力→出力の変換に集中 |
-| **ReadModel** | 読み取り専用データ | 表示用データの保持に集中 |
-
-**従来のアプローチ（Service層に全部入れる）との比較:**
-
-```typescript
-// ❌ 低凝集: Service に全責務が集中
-class OrderService {
-  create(dto: OrderDTO): Order { /* 生成ロジック */ }
-  validate(order: Order): boolean { /* 検証ロジック */ }
-  save(order: Order): void { /* DB保存 */ }
-  calculateTotal(order: Order): number { /* 計算ロジック */ }
-  sendConfirmation(order: Order): void { /* メール送信 */ }
-}
-
-// ✅ 高凝集: 責務ごとに分離（4分類）
-class OrderCreator { create(dto: OrderDTO): Order { /* Transition */ } }
-class OrderValidator { validate(order: Order): boolean { /* Query */ } }
-class OrderSaver { save(order: Order, repo: OrderRepository): void { /* Command */ } }
-class OrderTotalCalculator { calculate(order: Order): number { /* Query */ } }
-class OrderConfirmationSender { send(order: Order, mailer: Mailer): void { /* Command */ } }
-```
-
-### 凝集度の7段階（Larry Constantine）
-
-歴史的に、凝集度は7段階で分類されます（上ほど良い）：
-
-| レベル | 名称 | 説明 | 本スキルとの関係 |
-|--------|------|------|----------------|
-| 1（最高） | 機能的凝集 | 1つの機能のみを実行 | ✅ 4分類の各クラス |
-| 2 | 順序的凝集 | 順番に実行される処理をまとめる | △ Commandで許容 |
-| 3 | 通信的凝集 | 同じデータを扱う処理をまとめる | △ 注意が必要 |
-| 4 | 手続き的凝集 | 実行順序でまとめる | ❌ 避けるべき |
-| 5 | 時間的凝集 | 同時に実行される処理をまとめる | ❌ 避けるべき |
-| 6 | 論理的凝集 | 論理的に似た処理をまとめる | ❌ 避けるべき |
-| 7（最低） | 偶発的凝集 | たまたま一緒にあるだけ | ❌ 最悪 |
-
-**本スキルの目標:** すべてのクラスを「機能的凝集（レベル1）」にする。
-
----
-
-## 0.6 SOLID原則
-
-**SOLID原則**は、Robert C. Martin（Uncle Bob）が2000年代にまとめたオブジェクト指向設計の5原則です。本スキルの多くのルールは、SOLID原則を具体化したものです。
-
-### S: Single Responsibility Principle（単一責任原則）
-
-> **「クラスを変更する理由は1つだけであるべき」**
-
-**重要:** SRPは「1クラス1メソッド」という意味ではありません。「変更理由が1つ」という意味です。
-
-```typescript
-// ❌ 複数の変更理由がある
-class Employee {
-  calculatePay(): Money { /* 給与計算ルールが変わったら変更 */ }
-  reportHours(): string { /* レポート形式が変わったら変更 */ }
-  save(): void { /* DB設計が変わったら変更 */ }
-}
-
-// ✅ 変更理由が1つずつ
-class PayCalculator { calculate(employee: Employee): Money { /* ... */ } }
-class HourReporter { report(employee: Employee): string { /* ... */ } }
-class EmployeeSaver { save(employee: Employee, repo: EmployeeRepository): void { /* ... */ } }
-```
-
-**本スキルとの関係:**
-- 4分類（Command/Transition/Query/ReadModel）は、責務を明確に分離する
-- 「1クラス1パブリックメソッド」ルールは、SRPを徹底したもの
-
-### O: Open/Closed Principle（開放閉鎖原則）
-
-> **「拡張に対して開いており、修正に対して閉じているべき」**
-
-新しい機能を追加するとき、既存のコードを変更せずに拡張できるべきです。
-
-```typescript
-// ❌ 新しい支払い方法を追加するたびに既存コードを修正
-class PaymentProcessor {
-  process(payment: Payment): void {
-    switch (payment.type) {
-      case 'credit': /* ... */ break
-      case 'debit': /* ... */ break
-      case 'crypto': /* ... */ break  // ← 新規追加のたびに修正
-    }
-  }
-}
-
-// ✅ 新しい支払い方法を追加しても既存コードは変更不要
-interface PaymentMethod {
-  process(amount: Money): Promise<void>
-}
-
-class CreditCardPayment implements PaymentMethod { /* ... */ }
-class DebitCardPayment implements PaymentMethod { /* ... */ }
-class CryptoPayment implements PaymentMethod { /* ... */ }  // ← 追加するだけ
-
-class PaymentProcessor {
-  process(payment: PaymentMethod, amount: Money): Promise<void> {
-    return payment.process(amount)  // ← 変更不要
-  }
-}
-```
-
-**本スキルとの関係:**
-- 「Polymorphism over Switch」ルールは、OCPを実現する具体的手段
-- インターフェースを使った設計が、拡張性を保証する
-
-### L: Liskov Substitution Principle（リスコフ置換原則）
-
-> **「派生クラスは、基底クラスと置換可能であるべき」**
-
-親クラスを使っているコードで、子クラスに差し替えても正しく動くべきです。
-
-```typescript
-// ❌ LSP違反: Square は Rectangle と置換できない
-class Rectangle {
-  constructor(protected width: number, protected height: number) {}
-  setWidth(w: number) { this.width = w }
-  setHeight(h: number) { this.height = h }
-  area(): number { return this.width * this.height }
-}
-
-class Square extends Rectangle {
-  setWidth(w: number) { this.width = w; this.height = w }  // ← 予期しない動作
-  setHeight(h: number) { this.width = h; this.height = h }
-}
-
-// 問題: Rectangle を期待するコードで Square を渡すと壊れる
-function doubleWidth(rect: Rectangle) {
-  const originalArea = rect.area()
-  rect.setWidth(rect.width * 2)
-  // Rectangle なら面積は2倍になるはず
-  // Square だと4倍になってしまう！
-}
-```
-
-**本スキルとの関係:**
-- **「継承禁止」ルールは、LSP違反を根本から防ぐ**
-- 継承の代わりにインターフェースを使うことで、この問題を回避
-
-### I: Interface Segregation Principle（インターフェース分離原則）
-
-> **「クライアントが使わないメソッドへの依存を強制すべきではない」**
-
-```typescript
-// ❌ 太いインターフェース: 全員が全メソッドを実装する必要がある
-interface Worker {
-  work(): void
-  eat(): void
-  sleep(): void
-}
-
-class Robot implements Worker {
-  work(): void { /* OK */ }
-  eat(): void { throw new Error('ロボットは食べない') }  // ← 無意味
-  sleep(): void { throw new Error('ロボットは寝ない') }  // ← 無意味
-}
-
-// ✅ 分離されたインターフェース
-interface Workable { work(): void }
-interface Eatable { eat(): void }
-interface Sleepable { sleep(): void }
-
-class Robot implements Workable {
-  work(): void { /* OK */ }
-}
-
-class Human implements Workable, Eatable, Sleepable {
-  work(): void { /* ... */ }
-  eat(): void { /* ... */ }
-  sleep(): void { /* ... */ }
-}
-```
-
-**本スキルとの関係:**
-- 「1クラス1パブリックメソッド」は、ISPを極限まで適用したもの
-- 小さなインターフェースを複数実装する方が、大きなインターフェースより良い
-
-### D: Dependency Inversion Principle（依存性逆転原則）
-
-> **「上位モジュールは下位モジュールに依存すべきではない。両者は抽象に依存すべき」**
-
-```typescript
-// ❌ DIP違反: 上位（OrderService）が下位（MySQLRepository）に直接依存
-class MySQLOrderRepository { /* MySQL固有の実装 */ }
-
-class OrderService {
-  private repository = new MySQLOrderRepository()  // ← 具象に依存
-  
-  createOrder(data: OrderData): Order {
-    // ...
-    this.repository.save(order)
-    return order
-  }
-}
-
-// ✅ DIP遵守: 両者が抽象（インターフェース）に依存
-interface OrderRepository {
-  save(order: Order): Promise<void>
-}
-
-class MySQLOrderRepository implements OrderRepository { /* ... */ }
-class InMemoryOrderRepository implements OrderRepository { /* ... */ }
-
-class OrderService {
-  createOrder(data: OrderData, repository: OrderRepository): Order {
-    // ...
-    repository.save(order)
-    return order
-  }
-}
-```
-
-**本スキルとの関係:**
-- **「メソッド引数でRepositoryを受け取る」**ルールは、DIPを実現する具体的手段
-- コンストラクタインジェクションではなくメソッドインジェクションを推奨する理由
-
-### SOLID原則の要約と本スキルとの対応
-
-| 原則 | 要約 | 本スキルの対応ルール |
-|------|------|-------------------|
-| **SRP** | 変更理由は1つ | 4分類、1クラス1パブリックメソッド |
-| **OCP** | 拡張に開き、修正に閉じる | Polymorphism over Switch |
-| **LSP** | 置換可能性 | 継承禁止 |
-| **ISP** | 小さなインターフェース | 1クラス1パブリックメソッド |
-| **DIP** | 抽象に依存 | メソッド引数で依存を受け取る |
-
----
-
-## 0.7 Code Smells（コードの不吉な臭い）
-
-**Code Smells**は、Martin Fowlerの『Refactoring』（1999年）で体系化された「設計上の問題を示唆する兆候」です。「臭い」という表現は、「必ずしもバグではないが、何かおかしい」ことを示します。
-
-### 本スキルが解決するCode Smells
-
-| Code Smell | 説明 | 本スキルの対応 |
-|-----------|------|--------------|
-| **Long Method** | 長すぎるメソッド | 「10行以内」ルール |
-| **Long Class** | 巨大なクラス | 4分類で責務分離 |
-| **Feature Envy** | 他クラスのデータばかり使う | Tell, Don't Ask（5.6） |
-| **Data Class** | データだけでロジックがない | Rich Domain Model |
-| **Shotgun Surgery** | 1変更が多くのクラスに影響 | Polymorphismで解決 |
-| **Primitive Obsession** | プリミティブ型の乱用 | 値オブジェクト（5.3） |
-| **Switch Statements** | switch文の乱用 | Polymorphism over Switch |
-| **Parallel Inheritance** | 継承階層が並行して増える | 継承禁止 |
-| **Speculative Generality** | 「いつか使うかも」の汎用化 | YAGNI |
-| **Middle Man** | 委譲するだけのクラス | 直接呼び出し |
-
-### Long Method（長いメソッド）
-
-```typescript
-// ❌ Long Method: 何をしているか把握困難
-function processOrder(order: Order): void {
-  // 50行の検証ロジック...
-  // 30行の計算ロジック...
-  // 40行の保存ロジック...
-  // 20行の通知ロジック...
-}
-
-// ✅ 分割: 各メソッドが1つのことをする
-class OrderProcessor {
-  process(order: Order, deps: Dependencies): void {
-    const validated = new OrderValidator().validate(order)
-    const calculated = new OrderCalculator().calculate(validated)
-    new OrderSaver().save(calculated, deps.repository)
-    new OrderNotifier().notify(calculated, deps.mailer)
-  }
-}
-```
-
-**本スキルのルール:** メソッドは10行以内。超える場合は責務を分割。
-
-### Feature Envy（他クラスへの羨望）
-
-```typescript
-// ❌ Feature Envy: Customer のデータばかり使っている
-class OrderPricer {
-  calculateDiscount(order: Order): Money {
-    const customer = order.customer
-    if (customer.loyaltyPoints > 1000 &&
-        customer.membershipYears > 5 &&
-        customer.totalPurchases > 10000) {
-      return order.total.multiply(0.2)
-    }
-    return Money.zero()
-  }
-}
-
-// ✅ ロジックをデータがある場所に移動
-class Customer {
-  isVIP(): boolean {
-    return this.loyaltyPoints > 1000 &&
-           this.membershipYears > 5 &&
-           this.totalPurchases > 10000
-  }
-}
-
-class OrderPricer {
-  calculateDiscount(order: Order): Money {
-    if (order.customer.isVIP()) {
-      return order.total.multiply(0.2)
-    }
-    return Money.zero()
-  }
-}
-```
-
-**本スキルのルール:** 詳細は「5.6 Tell, Don't Ask」で解説。
-
-### Data Class（データクラス）/ Anemic Domain Model（貧血ドメインモデル）
-
-```typescript
-// ❌ Data Class: データだけでロジックがない（貧血ドメインモデル）
-class Order {
-  items: OrderItem[]
-  status: string
-  createdAt: Date
-}
-
-// 計算ロジックは外部の Service にある
-class OrderService {
-  calculateTotal(order: Order): Money { /* ... */ }
-  canBeCancelled(order: Order): boolean { /* ... */ }
-  addItem(order: Order, item: OrderItem): void { /* ... */ }
-}
-
-// ✅ Rich Domain Model: データとロジックが一緒
-class Order {
-  constructor(
-    private readonly items: OrderItem[],
-    private readonly status: OrderStatus,
-    private readonly createdAt: Date
-  ) {}
-  
-  total(): Money {
-    return this.items.reduce((sum, item) => sum.add(item.subtotal()), Money.zero())
-  }
-  
-  canBeCancelled(): boolean {
-    return this.status.allowsCancellation() &&
-           this.createdAt.isWithinLast(24, 'hours')
-  }
-  
-  withItem(item: OrderItem): Order {
-    return new Order([...this.items, item], this.status, this.createdAt)
-  }
-}
-```
-
-**本スキルのルール:**
-- Transition クラスにはロジックを持たせる
-- 「データだけ持っている」クラスは ReadModel のみ
-
-### Shotgun Surgery（散弾銃手術）
-
-```typescript
-// ❌ Shotgun Surgery: 新しい支払い方法を追加すると複数箇所を修正
-// 1. PaymentProcessor.ts
-switch (payment.type) {
-  case 'credit': ...
-  case 'paypal': ...
-  case 'crypto': ...  // ← 追加
-}
-
-// 2. PaymentValidator.ts
-switch (payment.type) {
-  case 'credit': ...
-  case 'paypal': ...
-  case 'crypto': ...  // ← 追加
-}
-
-// 3. PaymentReporter.ts
-switch (payment.type) {
-  case 'credit': ...
-  case 'paypal': ...
-  case 'crypto': ...  // ← 追加
-}
-
-// ✅ Polymorphism: 1箇所に集約
-interface PaymentMethod {
-  process(): Promise<void>
-  validate(): ValidationResult
-  report(): PaymentReport
-}
-
-class CryptoPayment implements PaymentMethod {
-  process(): Promise<void> { /* ... */ }
-  validate(): ValidationResult { /* ... */ }
-  report(): PaymentReport { /* ... */ }
-}
-```
-
-**本スキルのルール:** 「Polymorphism over Switch」で1箇所にまとめる。
-
-### Primitive Obsession（プリミティブ型への執着）
-
-```typescript
-// ❌ Primitive Obsession: string や number を直接使う
-function createUser(
-  email: string,      // メールアドレス
-  phone: string,      // 電話番号
-  age: number,        // 年齢
-  zipCode: string     // 郵便番号
-): User {
-  // email の形式チェックはどこで？
-  // age が負の数だったら？
-  // 呼び出し側で email と phone を逆に渡したら？
-}
-
-// ✅ 値オブジェクトで意味と制約を表現
-function createUser(
-  email: Email,
-  phone: PhoneNumber,
-  age: Age,
-  zipCode: ZipCode
-): User {
-  // 各値オブジェクトが自身の検証を持つ
-  // 型が違うので引数の順序を間違えるとコンパイルエラー
-}
-
-class Email {
-  private constructor(private readonly value: string) {}
-  
-  static create(value: string): Email | ValidationError {
-    if (!value.includes('@')) {
-      return new ValidationError('Invalid email format')
-    }
-    return new Email(value)
-  }
-}
-```
-
-**本スキルのルール:** 詳細は「5.3 Primitive Obsession の回避」で解説。
+> **💡 理論的背景について**
+> 
+> 本スキルのルールは、50年以上の設計研究に基づいています。
+> 「なぜこのルールなのか」の理論的根拠（凝集度/結合度、SOLID原則、Code Smells）は
+> **[Part A: 理論的背景](#part-a-理論的背景--なぜこれらのルールなのか)** で解説しています。
+> 
+> まずはルールを学び、「なぜ？」が気になったらPart Aを参照してください。
 
 ---
 
@@ -4056,7 +3549,16 @@ class FailingPaymentGateway implements PaymentGateway {
 
 ---
 
-# Part 8: 適用判断ガイド — いつ何を使うべきか
+# Part 8: 発展編 — 本スキル「以外」の選択肢
+
+> **このパートについて:**
+> 本スキルは「90%のバックエンド開発」をカバーする実践的なルール集です。
+> しかし、残り10%には本スキルでは扱わない選択肢が存在します。
+> 
+> このパートでは「本スキルを使わない方が良いケース」と「知っておくべき代替アプローチ」を解説します。
+> **読み飛ばし可能**ですが、シニアエンジニアを目指すなら一読をお勧めします。
+
+---
 
 ## 8.1 CQRS — 90%のバックエンドには過剰
 
@@ -4556,6 +4058,536 @@ class User {
 
 ---
 
+
+# Part A: 理論的背景 — なぜこれらのルールなのか
+
+> **このパートについて:**
+> 本スキルのルールは、50年以上のソフトウェア設計研究に基づいています。
+> ここでは「なぜこのルールなのか」の理論的根拠を解説します。
+> 
+> **読み飛ばし可能**です。まずはPart 1-7でルールを学び、
+> 「なぜ？」が気になったら戻ってきてください。
+
+---
+
+## A.1 凝集度と結合度（Cohesion and Coupling）
+
+### なぜこれが最も重要な概念なのか
+
+**凝集度**と**結合度**は、ソフトウェア設計における最も基礎的な品質指標です。1974年にLarry ConstantineとEdward Yourdonが提唱して以来、50年間変わらず設計の根幹を成しています。
+
+**ミノ駆動本（成瀬允宣『良いコード/悪いコードで学ぶ設計入門』）** でも、凝集度と結合度は全ルールの根拠として繰り返し登場します。
+
+| 指標 | 定義 | 良い状態 | 悪い状態 |
+|------|------|---------|---------|
+| **凝集度（Cohesion）** | クラス内の要素がどれだけ密接に関連しているか | 高凝集（High Cohesion） | 低凝集（Low Cohesion） |
+| **結合度（Coupling）** | クラス間がどれだけ依存し合っているか | 低結合（Loose Coupling） | 高結合（Tight Coupling） |
+
+**目標は「高凝集・低結合」です。**
+
+### 高凝集（High Cohesion）
+
+**高凝集**とは、「1つのクラスが1つの責務に集中している」状態です。
+
+```typescript
+// ❌ 低凝集: 複数の責務が混在
+class UserManager {
+  validateEmail(email: string): boolean { /* ... */ }
+  hashPassword(password: string): string { /* ... */ }
+  sendWelcomeEmail(user: User): void { /* ... */ }
+  calculateLoyaltyPoints(user: User): number { /* ... */ }
+  generateReport(users: User[]): string { /* ... */ }
+}
+
+// ✅ 高凝集: 各クラスが1つの責務に集中
+class EmailValidator { validate(email: string): boolean { /* ... */ } }
+class PasswordHasher { hash(password: string): string { /* ... */ } }
+class WelcomeEmailSender { send(user: User): void { /* ... */ } }
+class LoyaltyPointsCalculator { calculate(user: User): number { /* ... */ } }
+class UserReportGenerator { generate(users: User[]): string { /* ... */ } }
+```
+
+**なぜ高凝集が良いのか:**
+- 変更理由が1つ → 変更時に他の機能に影響しない
+- クラス名を見れば何をするか分かる
+- テストが書きやすい（責務が明確）
+
+### 低結合（Loose Coupling）
+
+**低結合**とは、「クラス間の依存が最小限」な状態です。
+
+```typescript
+// ❌ 高結合: OrderService が MySQL の内部実装に依存
+class OrderService {
+  constructor(private mysqlConnection: MySQLConnection) {}
+  
+  save(order: Order): void {
+    // MySQL 固有の SQL を直接実行
+    this.mysqlConnection.query(`INSERT INTO orders VALUES (...)`)
+  }
+}
+
+// ✅ 低結合: インターフェースに依存
+interface OrderRepository {
+  save(order: Order): Promise<void>
+}
+
+class OrderService {
+  save(order: Order, repository: OrderRepository): Promise<void> {
+    return repository.save(order)
+  }
+}
+```
+
+**なぜ低結合が良いのか:**
+- 依存先を差し替えられる（MySQL → PostgreSQL）
+- テスト時にモックを注入できる
+- 変更の影響範囲が限定される
+
+### 本スキルの4分類と凝集度の関係
+
+本スキルの4分類（Command / Transition / Query / ReadModel）は、**凝集度を最大化する設計パターン**です：
+
+| 分類 | 責務 | 凝集度への貢献 |
+|------|------|--------------|
+| **Command** | 副作用を実行する | 副作用を1箇所に集約（他のクラスは副作用を持たない） |
+| **Transition** | 状態遷移ロジック | ビジネスロジックを1箇所に集約 |
+| **Query** | 純粋な計算 | 入力→出力の変換に集中 |
+| **ReadModel** | 読み取り専用データ | 表示用データの保持に集中 |
+
+**従来のアプローチ（Service層に全部入れる）との比較:**
+
+```typescript
+// ❌ 低凝集: Service に全責務が集中
+class OrderService {
+  create(dto: OrderDTO): Order { /* 生成ロジック */ }
+  validate(order: Order): boolean { /* 検証ロジック */ }
+  save(order: Order): void { /* DB保存 */ }
+  calculateTotal(order: Order): number { /* 計算ロジック */ }
+  sendConfirmation(order: Order): void { /* メール送信 */ }
+}
+
+// ✅ 高凝集: 責務ごとに分離（4分類）
+class OrderCreator { create(dto: OrderDTO): Order { /* Transition */ } }
+class OrderValidator { validate(order: Order): boolean { /* Query */ } }
+class OrderSaver { save(order: Order, repo: OrderRepository): void { /* Command */ } }
+class OrderTotalCalculator { calculate(order: Order): number { /* Query */ } }
+class OrderConfirmationSender { send(order: Order, mailer: Mailer): void { /* Command */ } }
+```
+
+### 凝集度の7段階（Larry Constantine）
+
+歴史的に、凝集度は7段階で分類されます（上ほど良い）：
+
+| レベル | 名称 | 説明 | 本スキルとの関係 |
+|--------|------|------|----------------|
+| 1（最高） | 機能的凝集 | 1つの機能のみを実行 | ✅ 4分類の各クラス |
+| 2 | 順序的凝集 | 順番に実行される処理をまとめる | △ Commandで許容 |
+| 3 | 通信的凝集 | 同じデータを扱う処理をまとめる | △ 注意が必要 |
+| 4 | 手続き的凝集 | 実行順序でまとめる | ❌ 避けるべき |
+| 5 | 時間的凝集 | 同時に実行される処理をまとめる | ❌ 避けるべき |
+| 6 | 論理的凝集 | 論理的に似た処理をまとめる | ❌ 避けるべき |
+| 7（最低） | 偶発的凝集 | たまたま一緒にあるだけ | ❌ 最悪 |
+
+**本スキルの目標:** すべてのクラスを「機能的凝集（レベル1）」にする。
+
+---
+
+## A.2 SOLID原則
+
+**SOLID原則**は、Robert C. Martin（Uncle Bob）が2000年代にまとめたオブジェクト指向設計の5原則です。本スキルの多くのルールは、SOLID原則を具体化したものです。
+
+### S: Single Responsibility Principle（単一責任原則）
+
+> **「クラスを変更する理由は1つだけであるべき」**
+
+**重要:** SRPは「1クラス1メソッド」という意味ではありません。「変更理由が1つ」という意味です。
+
+```typescript
+// ❌ 複数の変更理由がある
+class Employee {
+  calculatePay(): Money { /* 給与計算ルールが変わったら変更 */ }
+  reportHours(): string { /* レポート形式が変わったら変更 */ }
+  save(): void { /* DB設計が変わったら変更 */ }
+}
+
+// ✅ 変更理由が1つずつ
+class PayCalculator { calculate(employee: Employee): Money { /* ... */ } }
+class HourReporter { report(employee: Employee): string { /* ... */ } }
+class EmployeeSaver { save(employee: Employee, repo: EmployeeRepository): void { /* ... */ } }
+```
+
+**本スキルとの関係:**
+- 4分類（Command/Transition/Query/ReadModel）は、責務を明確に分離する
+- 「1クラス1パブリックメソッド」ルールは、SRPを徹底したもの
+
+### O: Open/Closed Principle（開放閉鎖原則）
+
+> **「拡張に対して開いており、修正に対して閉じているべき」**
+
+新しい機能を追加するとき、既存のコードを変更せずに拡張できるべきです。
+
+```typescript
+// ❌ 新しい支払い方法を追加するたびに既存コードを修正
+class PaymentProcessor {
+  process(payment: Payment): void {
+    switch (payment.type) {
+      case 'credit': /* ... */ break
+      case 'debit': /* ... */ break
+      case 'crypto': /* ... */ break  // ← 新規追加のたびに修正
+    }
+  }
+}
+
+// ✅ 新しい支払い方法を追加しても既存コードは変更不要
+interface PaymentMethod {
+  process(amount: Money): Promise<void>
+}
+
+class CreditCardPayment implements PaymentMethod { /* ... */ }
+class DebitCardPayment implements PaymentMethod { /* ... */ }
+class CryptoPayment implements PaymentMethod { /* ... */ }  // ← 追加するだけ
+
+class PaymentProcessor {
+  process(payment: PaymentMethod, amount: Money): Promise<void> {
+    return payment.process(amount)  // ← 変更不要
+  }
+}
+```
+
+**本スキルとの関係:**
+- 「Polymorphism over Switch」ルールは、OCPを実現する具体的手段
+- インターフェースを使った設計が、拡張性を保証する
+
+### L: Liskov Substitution Principle（リスコフ置換原則）
+
+> **「派生クラスは、基底クラスと置換可能であるべき」**
+
+親クラスを使っているコードで、子クラスに差し替えても正しく動くべきです。
+
+```typescript
+// ❌ LSP違反: Square は Rectangle と置換できない
+class Rectangle {
+  constructor(protected width: number, protected height: number) {}
+  setWidth(w: number) { this.width = w }
+  setHeight(h: number) { this.height = h }
+  area(): number { return this.width * this.height }
+}
+
+class Square extends Rectangle {
+  setWidth(w: number) { this.width = w; this.height = w }  // ← 予期しない動作
+  setHeight(h: number) { this.width = h; this.height = h }
+}
+
+// 問題: Rectangle を期待するコードで Square を渡すと壊れる
+function doubleWidth(rect: Rectangle) {
+  const originalArea = rect.area()
+  rect.setWidth(rect.width * 2)
+  // Rectangle なら面積は2倍になるはず
+  // Square だと4倍になってしまう！
+}
+```
+
+**本スキルとの関係:**
+- **「継承禁止」ルールは、LSP違反を根本から防ぐ**
+- 継承の代わりにインターフェースを使うことで、この問題を回避
+
+### I: Interface Segregation Principle（インターフェース分離原則）
+
+> **「クライアントが使わないメソッドへの依存を強制すべきではない」**
+
+```typescript
+// ❌ 太いインターフェース: 全員が全メソッドを実装する必要がある
+interface Worker {
+  work(): void
+  eat(): void
+  sleep(): void
+}
+
+class Robot implements Worker {
+  work(): void { /* OK */ }
+  eat(): void { throw new Error('ロボットは食べない') }  // ← 無意味
+  sleep(): void { throw new Error('ロボットは寝ない') }  // ← 無意味
+}
+
+// ✅ 分離されたインターフェース
+interface Workable { work(): void }
+interface Eatable { eat(): void }
+interface Sleepable { sleep(): void }
+
+class Robot implements Workable {
+  work(): void { /* OK */ }
+}
+
+class Human implements Workable, Eatable, Sleepable {
+  work(): void { /* ... */ }
+  eat(): void { /* ... */ }
+  sleep(): void { /* ... */ }
+}
+```
+
+**本スキルとの関係:**
+- 「1クラス1パブリックメソッド」は、ISPを極限まで適用したもの
+- 小さなインターフェースを複数実装する方が、大きなインターフェースより良い
+
+### D: Dependency Inversion Principle（依存性逆転原則）
+
+> **「上位モジュールは下位モジュールに依存すべきではない。両者は抽象に依存すべき」**
+
+```typescript
+// ❌ DIP違反: 上位（OrderService）が下位（MySQLRepository）に直接依存
+class MySQLOrderRepository { /* MySQL固有の実装 */ }
+
+class OrderService {
+  private repository = new MySQLOrderRepository()  // ← 具象に依存
+  
+  createOrder(data: OrderData): Order {
+    // ...
+    this.repository.save(order)
+    return order
+  }
+}
+
+// ✅ DIP遵守: 両者が抽象（インターフェース）に依存
+interface OrderRepository {
+  save(order: Order): Promise<void>
+}
+
+class MySQLOrderRepository implements OrderRepository { /* ... */ }
+class InMemoryOrderRepository implements OrderRepository { /* ... */ }
+
+class OrderService {
+  createOrder(data: OrderData, repository: OrderRepository): Order {
+    // ...
+    repository.save(order)
+    return order
+  }
+}
+```
+
+**本スキルとの関係:**
+- **「メソッド引数でRepositoryを受け取る」**ルールは、DIPを実現する具体的手段
+- コンストラクタインジェクションではなくメソッドインジェクションを推奨する理由
+
+### SOLID原則の要約と本スキルとの対応
+
+| 原則 | 要約 | 本スキルの対応ルール |
+|------|------|-------------------|
+| **SRP** | 変更理由は1つ | 4分類、1クラス1パブリックメソッド |
+| **OCP** | 拡張に開き、修正に閉じる | Polymorphism over Switch |
+| **LSP** | 置換可能性 | 継承禁止 |
+| **ISP** | 小さなインターフェース | 1クラス1パブリックメソッド |
+| **DIP** | 抽象に依存 | メソッド引数で依存を受け取る |
+
+---
+
+## A.3 Code Smells（コードの不吉な臭い）
+
+**Code Smells**は、Martin Fowlerの『Refactoring』（1999年）で体系化された「設計上の問題を示唆する兆候」です。「臭い」という表現は、「必ずしもバグではないが、何かおかしい」ことを示します。
+
+### 本スキルが解決するCode Smells
+
+| Code Smell | 説明 | 本スキルの対応 |
+|-----------|------|--------------|
+| **Long Method** | 長すぎるメソッド | 「10行以内」ルール |
+| **Long Class** | 巨大なクラス | 4分類で責務分離 |
+| **Feature Envy** | 他クラスのデータばかり使う | Tell, Don't Ask（5.6） |
+| **Data Class** | データだけでロジックがない | Rich Domain Model |
+| **Shotgun Surgery** | 1変更が多くのクラスに影響 | Polymorphismで解決 |
+| **Primitive Obsession** | プリミティブ型の乱用 | 値オブジェクト（5.3） |
+| **Switch Statements** | switch文の乱用 | Polymorphism over Switch |
+| **Parallel Inheritance** | 継承階層が並行して増える | 継承禁止 |
+| **Speculative Generality** | 「いつか使うかも」の汎用化 | YAGNI |
+| **Middle Man** | 委譲するだけのクラス | 直接呼び出し |
+
+### Long Method（長いメソッド）
+
+```typescript
+// ❌ Long Method: 何をしているか把握困難
+function processOrder(order: Order): void {
+  // 50行の検証ロジック...
+  // 30行の計算ロジック...
+  // 40行の保存ロジック...
+  // 20行の通知ロジック...
+}
+
+// ✅ 分割: 各メソッドが1つのことをする
+class OrderProcessor {
+  process(order: Order, deps: Dependencies): void {
+    const validated = new OrderValidator().validate(order)
+    const calculated = new OrderCalculator().calculate(validated)
+    new OrderSaver().save(calculated, deps.repository)
+    new OrderNotifier().notify(calculated, deps.mailer)
+  }
+}
+```
+
+**本スキルのルール:** メソッドは10行以内。超える場合は責務を分割。
+
+### Feature Envy（他クラスへの羨望）
+
+```typescript
+// ❌ Feature Envy: Customer のデータばかり使っている
+class OrderPricer {
+  calculateDiscount(order: Order): Money {
+    const customer = order.customer
+    if (customer.loyaltyPoints > 1000 &&
+        customer.membershipYears > 5 &&
+        customer.totalPurchases > 10000) {
+      return order.total.multiply(0.2)
+    }
+    return Money.zero()
+  }
+}
+
+// ✅ ロジックをデータがある場所に移動
+class Customer {
+  isVIP(): boolean {
+    return this.loyaltyPoints > 1000 &&
+           this.membershipYears > 5 &&
+           this.totalPurchases > 10000
+  }
+}
+
+class OrderPricer {
+  calculateDiscount(order: Order): Money {
+    if (order.customer.isVIP()) {
+      return order.total.multiply(0.2)
+    }
+    return Money.zero()
+  }
+}
+```
+
+**本スキルのルール:** 詳細は「5.6 Tell, Don't Ask」で解説。
+
+### Data Class（データクラス）/ Anemic Domain Model（貧血ドメインモデル）
+
+```typescript
+// ❌ Data Class: データだけでロジックがない（貧血ドメインモデル）
+class Order {
+  items: OrderItem[]
+  status: string
+  createdAt: Date
+}
+
+// 計算ロジックは外部の Service にある
+class OrderService {
+  calculateTotal(order: Order): Money { /* ... */ }
+  canBeCancelled(order: Order): boolean { /* ... */ }
+  addItem(order: Order, item: OrderItem): void { /* ... */ }
+}
+
+// ✅ Rich Domain Model: データとロジックが一緒
+class Order {
+  constructor(
+    private readonly items: OrderItem[],
+    private readonly status: OrderStatus,
+    private readonly createdAt: Date
+  ) {}
+  
+  total(): Money {
+    return this.items.reduce((sum, item) => sum.add(item.subtotal()), Money.zero())
+  }
+  
+  canBeCancelled(): boolean {
+    return this.status.allowsCancellation() &&
+           this.createdAt.isWithinLast(24, 'hours')
+  }
+  
+  withItem(item: OrderItem): Order {
+    return new Order([...this.items, item], this.status, this.createdAt)
+  }
+}
+```
+
+**本スキルのルール:**
+- Transition クラスにはロジックを持たせる
+- 「データだけ持っている」クラスは ReadModel のみ
+
+### Shotgun Surgery（散弾銃手術）
+
+```typescript
+// ❌ Shotgun Surgery: 新しい支払い方法を追加すると複数箇所を修正
+// 1. PaymentProcessor.ts
+switch (payment.type) {
+  case 'credit': ...
+  case 'paypal': ...
+  case 'crypto': ...  // ← 追加
+}
+
+// 2. PaymentValidator.ts
+switch (payment.type) {
+  case 'credit': ...
+  case 'paypal': ...
+  case 'crypto': ...  // ← 追加
+}
+
+// 3. PaymentReporter.ts
+switch (payment.type) {
+  case 'credit': ...
+  case 'paypal': ...
+  case 'crypto': ...  // ← 追加
+}
+
+// ✅ Polymorphism: 1箇所に集約
+interface PaymentMethod {
+  process(): Promise<void>
+  validate(): ValidationResult
+  report(): PaymentReport
+}
+
+class CryptoPayment implements PaymentMethod {
+  process(): Promise<void> { /* ... */ }
+  validate(): ValidationResult { /* ... */ }
+  report(): PaymentReport { /* ... */ }
+}
+```
+
+**本スキルのルール:** 「Polymorphism over Switch」で1箇所にまとめる。
+
+### Primitive Obsession（プリミティブ型への執着）
+
+```typescript
+// ❌ Primitive Obsession: string や number を直接使う
+function createUser(
+  email: string,      // メールアドレス
+  phone: string,      // 電話番号
+  age: number,        // 年齢
+  zipCode: string     // 郵便番号
+): User {
+  // email の形式チェックはどこで？
+  // age が負の数だったら？
+  // 呼び出し側で email と phone を逆に渡したら？
+}
+
+// ✅ 値オブジェクトで意味と制約を表現
+function createUser(
+  email: Email,
+  phone: PhoneNumber,
+  age: Age,
+  zipCode: ZipCode
+): User {
+  // 各値オブジェクトが自身の検証を持つ
+  // 型が違うので引数の順序を間違えるとコンパイルエラー
+}
+
+class Email {
+  private constructor(private readonly value: string) {}
+  
+  static create(value: string): Email | ValidationError {
+    if (!value.includes('@')) {
+      return new ValidationError('Invalid email format')
+    }
+    return new Email(value)
+  }
+}
+```
+
+**本スキルのルール:** 詳細は「5.3 Primitive Obsession の回避」で解説。
+
+---
+
 # Appendix: クイックリファレンス
 
 ## 判断フロー
@@ -4639,5 +4671,5 @@ class User {
 | **Test Data Factory** | テストデータを毎回新しく生成する関数 |
 | **InMemory Repository** | メモリ上で動作するテスト用Repository |
 | **Gateway** | 外部サービスを抽象化するインターフェース |
-| **モック** | テスト用の偽物。呼び出しを検証する |
-| **スタブ** | テスト用の偽物。決まった値を返す |
+
+> **テスト用語（モック、スタブ、フィクスチャ）** は 0.2 節で解説しています。
