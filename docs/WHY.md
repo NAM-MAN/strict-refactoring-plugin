@@ -188,6 +188,524 @@ class User {
 
 ---
 
+## 0.5 凝集度と結合度（Cohesion and Coupling）
+
+### なぜこれが最も重要な概念なのか
+
+**凝集度**と**結合度**は、ソフトウェア設計における最も基礎的な品質指標です。1974年にLarry ConstantineとEdward Yourdonが提唱して以来、50年間変わらず設計の根幹を成しています。
+
+**ミノ駆動本（成瀬允宣『良いコード/悪いコードで学ぶ設計入門』）** でも、凝集度と結合度は全ルールの根拠として繰り返し登場します。
+
+| 指標 | 定義 | 良い状態 | 悪い状態 |
+|------|------|---------|---------|
+| **凝集度（Cohesion）** | クラス内の要素がどれだけ密接に関連しているか | 高凝集（High Cohesion） | 低凝集（Low Cohesion） |
+| **結合度（Coupling）** | クラス間がどれだけ依存し合っているか | 低結合（Loose Coupling） | 高結合（Tight Coupling） |
+
+**目標は「高凝集・低結合」です。**
+
+### 高凝集（High Cohesion）
+
+**高凝集**とは、「1つのクラスが1つの責務に集中している」状態です。
+
+```typescript
+// ❌ 低凝集: 複数の責務が混在
+class UserManager {
+  validateEmail(email: string): boolean { /* ... */ }
+  hashPassword(password: string): string { /* ... */ }
+  sendWelcomeEmail(user: User): void { /* ... */ }
+  calculateLoyaltyPoints(user: User): number { /* ... */ }
+  generateReport(users: User[]): string { /* ... */ }
+}
+
+// ✅ 高凝集: 各クラスが1つの責務に集中
+class EmailValidator { validate(email: string): boolean { /* ... */ } }
+class PasswordHasher { hash(password: string): string { /* ... */ } }
+class WelcomeEmailSender { send(user: User): void { /* ... */ } }
+class LoyaltyPointsCalculator { calculate(user: User): number { /* ... */ } }
+class UserReportGenerator { generate(users: User[]): string { /* ... */ } }
+```
+
+**なぜ高凝集が良いのか:**
+- 変更理由が1つ → 変更時に他の機能に影響しない
+- クラス名を見れば何をするか分かる
+- テストが書きやすい（責務が明確）
+
+### 低結合（Loose Coupling）
+
+**低結合**とは、「クラス間の依存が最小限」な状態です。
+
+```typescript
+// ❌ 高結合: OrderService が MySQL の内部実装に依存
+class OrderService {
+  constructor(private mysqlConnection: MySQLConnection) {}
+  
+  save(order: Order): void {
+    // MySQL 固有の SQL を直接実行
+    this.mysqlConnection.query(`INSERT INTO orders VALUES (...)`)
+  }
+}
+
+// ✅ 低結合: インターフェースに依存
+interface OrderRepository {
+  save(order: Order): Promise<void>
+}
+
+class OrderService {
+  save(order: Order, repository: OrderRepository): Promise<void> {
+    return repository.save(order)
+  }
+}
+```
+
+**なぜ低結合が良いのか:**
+- 依存先を差し替えられる（MySQL → PostgreSQL）
+- テスト時にモックを注入できる
+- 変更の影響範囲が限定される
+
+### 本スキルの4分類と凝集度の関係
+
+本スキルの4分類（Command / Transition / Query / ReadModel）は、**凝集度を最大化する設計パターン**です：
+
+| 分類 | 責務 | 凝集度への貢献 |
+|------|------|--------------|
+| **Command** | 副作用を実行する | 副作用を1箇所に集約（他のクラスは副作用を持たない） |
+| **Transition** | 状態遷移ロジック | ビジネスロジックを1箇所に集約 |
+| **Query** | 純粋な計算 | 入力→出力の変換に集中 |
+| **ReadModel** | 読み取り専用データ | 表示用データの保持に集中 |
+
+**従来のアプローチ（Service層に全部入れる）との比較:**
+
+```typescript
+// ❌ 低凝集: Service に全責務が集中
+class OrderService {
+  create(dto: OrderDTO): Order { /* 生成ロジック */ }
+  validate(order: Order): boolean { /* 検証ロジック */ }
+  save(order: Order): void { /* DB保存 */ }
+  calculateTotal(order: Order): number { /* 計算ロジック */ }
+  sendConfirmation(order: Order): void { /* メール送信 */ }
+}
+
+// ✅ 高凝集: 責務ごとに分離（4分類）
+class OrderCreator { create(dto: OrderDTO): Order { /* Transition */ } }
+class OrderValidator { validate(order: Order): boolean { /* Query */ } }
+class OrderSaver { save(order: Order, repo: OrderRepository): void { /* Command */ } }
+class OrderTotalCalculator { calculate(order: Order): number { /* Query */ } }
+class OrderConfirmationSender { send(order: Order, mailer: Mailer): void { /* Command */ } }
+```
+
+### 凝集度の7段階（Larry Constantine）
+
+歴史的に、凝集度は7段階で分類されます（上ほど良い）：
+
+| レベル | 名称 | 説明 | 本スキルとの関係 |
+|--------|------|------|----------------|
+| 1（最高） | 機能的凝集 | 1つの機能のみを実行 | ✅ 4分類の各クラス |
+| 2 | 順序的凝集 | 順番に実行される処理をまとめる | △ Commandで許容 |
+| 3 | 通信的凝集 | 同じデータを扱う処理をまとめる | △ 注意が必要 |
+| 4 | 手続き的凝集 | 実行順序でまとめる | ❌ 避けるべき |
+| 5 | 時間的凝集 | 同時に実行される処理をまとめる | ❌ 避けるべき |
+| 6 | 論理的凝集 | 論理的に似た処理をまとめる | ❌ 避けるべき |
+| 7（最低） | 偶発的凝集 | たまたま一緒にあるだけ | ❌ 最悪 |
+
+**本スキルの目標:** すべてのクラスを「機能的凝集（レベル1）」にする。
+
+---
+
+## 0.6 SOLID原則
+
+**SOLID原則**は、Robert C. Martin（Uncle Bob）が2000年代にまとめたオブジェクト指向設計の5原則です。本スキルの多くのルールは、SOLID原則を具体化したものです。
+
+### S: Single Responsibility Principle（単一責任原則）
+
+> **「クラスを変更する理由は1つだけであるべき」**
+
+**重要:** SRPは「1クラス1メソッド」という意味ではありません。「変更理由が1つ」という意味です。
+
+```typescript
+// ❌ 複数の変更理由がある
+class Employee {
+  calculatePay(): Money { /* 給与計算ルールが変わったら変更 */ }
+  reportHours(): string { /* レポート形式が変わったら変更 */ }
+  save(): void { /* DB設計が変わったら変更 */ }
+}
+
+// ✅ 変更理由が1つずつ
+class PayCalculator { calculate(employee: Employee): Money { /* ... */ } }
+class HourReporter { report(employee: Employee): string { /* ... */ } }
+class EmployeeSaver { save(employee: Employee, repo: EmployeeRepository): void { /* ... */ } }
+```
+
+**本スキルとの関係:**
+- 4分類（Command/Transition/Query/ReadModel）は、責務を明確に分離する
+- 「1クラス1パブリックメソッド」ルールは、SRPを徹底したもの
+
+### O: Open/Closed Principle（開放閉鎖原則）
+
+> **「拡張に対して開いており、修正に対して閉じているべき」**
+
+新しい機能を追加するとき、既存のコードを変更せずに拡張できるべきです。
+
+```typescript
+// ❌ 新しい支払い方法を追加するたびに既存コードを修正
+class PaymentProcessor {
+  process(payment: Payment): void {
+    switch (payment.type) {
+      case 'credit': /* ... */ break
+      case 'debit': /* ... */ break
+      case 'crypto': /* ... */ break  // ← 新規追加のたびに修正
+    }
+  }
+}
+
+// ✅ 新しい支払い方法を追加しても既存コードは変更不要
+interface PaymentMethod {
+  process(amount: Money): Promise<void>
+}
+
+class CreditCardPayment implements PaymentMethod { /* ... */ }
+class DebitCardPayment implements PaymentMethod { /* ... */ }
+class CryptoPayment implements PaymentMethod { /* ... */ }  // ← 追加するだけ
+
+class PaymentProcessor {
+  process(payment: PaymentMethod, amount: Money): Promise<void> {
+    return payment.process(amount)  // ← 変更不要
+  }
+}
+```
+
+**本スキルとの関係:**
+- 「Polymorphism over Switch」ルールは、OCPを実現する具体的手段
+- インターフェースを使った設計が、拡張性を保証する
+
+### L: Liskov Substitution Principle（リスコフ置換原則）
+
+> **「派生クラスは、基底クラスと置換可能であるべき」**
+
+親クラスを使っているコードで、子クラスに差し替えても正しく動くべきです。
+
+```typescript
+// ❌ LSP違反: Square は Rectangle と置換できない
+class Rectangle {
+  constructor(protected width: number, protected height: number) {}
+  setWidth(w: number) { this.width = w }
+  setHeight(h: number) { this.height = h }
+  area(): number { return this.width * this.height }
+}
+
+class Square extends Rectangle {
+  setWidth(w: number) { this.width = w; this.height = w }  // ← 予期しない動作
+  setHeight(h: number) { this.width = h; this.height = h }
+}
+
+// 問題: Rectangle を期待するコードで Square を渡すと壊れる
+function doubleWidth(rect: Rectangle) {
+  const originalArea = rect.area()
+  rect.setWidth(rect.width * 2)
+  // Rectangle なら面積は2倍になるはず
+  // Square だと4倍になってしまう！
+}
+```
+
+**本スキルとの関係:**
+- **「継承禁止」ルールは、LSP違反を根本から防ぐ**
+- 継承の代わりにインターフェースを使うことで、この問題を回避
+
+### I: Interface Segregation Principle（インターフェース分離原則）
+
+> **「クライアントが使わないメソッドへの依存を強制すべきではない」**
+
+```typescript
+// ❌ 太いインターフェース: 全員が全メソッドを実装する必要がある
+interface Worker {
+  work(): void
+  eat(): void
+  sleep(): void
+}
+
+class Robot implements Worker {
+  work(): void { /* OK */ }
+  eat(): void { throw new Error('ロボットは食べない') }  // ← 無意味
+  sleep(): void { throw new Error('ロボットは寝ない') }  // ← 無意味
+}
+
+// ✅ 分離されたインターフェース
+interface Workable { work(): void }
+interface Eatable { eat(): void }
+interface Sleepable { sleep(): void }
+
+class Robot implements Workable {
+  work(): void { /* OK */ }
+}
+
+class Human implements Workable, Eatable, Sleepable {
+  work(): void { /* ... */ }
+  eat(): void { /* ... */ }
+  sleep(): void { /* ... */ }
+}
+```
+
+**本スキルとの関係:**
+- 「1クラス1パブリックメソッド」は、ISPを極限まで適用したもの
+- 小さなインターフェースを複数実装する方が、大きなインターフェースより良い
+
+### D: Dependency Inversion Principle（依存性逆転原則）
+
+> **「上位モジュールは下位モジュールに依存すべきではない。両者は抽象に依存すべき」**
+
+```typescript
+// ❌ DIP違反: 上位（OrderService）が下位（MySQLRepository）に直接依存
+class MySQLOrderRepository { /* MySQL固有の実装 */ }
+
+class OrderService {
+  private repository = new MySQLOrderRepository()  // ← 具象に依存
+  
+  createOrder(data: OrderData): Order {
+    // ...
+    this.repository.save(order)
+    return order
+  }
+}
+
+// ✅ DIP遵守: 両者が抽象（インターフェース）に依存
+interface OrderRepository {
+  save(order: Order): Promise<void>
+}
+
+class MySQLOrderRepository implements OrderRepository { /* ... */ }
+class InMemoryOrderRepository implements OrderRepository { /* ... */ }
+
+class OrderService {
+  createOrder(data: OrderData, repository: OrderRepository): Order {
+    // ...
+    repository.save(order)
+    return order
+  }
+}
+```
+
+**本スキルとの関係:**
+- **「メソッド引数でRepositoryを受け取る」**ルールは、DIPを実現する具体的手段
+- コンストラクタインジェクションではなくメソッドインジェクションを推奨する理由
+
+### SOLID原則の要約と本スキルとの対応
+
+| 原則 | 要約 | 本スキルの対応ルール |
+|------|------|-------------------|
+| **SRP** | 変更理由は1つ | 4分類、1クラス1パブリックメソッド |
+| **OCP** | 拡張に開き、修正に閉じる | Polymorphism over Switch |
+| **LSP** | 置換可能性 | 継承禁止 |
+| **ISP** | 小さなインターフェース | 1クラス1パブリックメソッド |
+| **DIP** | 抽象に依存 | メソッド引数で依存を受け取る |
+
+---
+
+## 0.7 Code Smells（コードの不吉な臭い）
+
+**Code Smells**は、Martin Fowlerの『Refactoring』（1999年）で体系化された「設計上の問題を示唆する兆候」です。「臭い」という表現は、「必ずしもバグではないが、何かおかしい」ことを示します。
+
+### 本スキルが解決するCode Smells
+
+| Code Smell | 説明 | 本スキルの対応 |
+|-----------|------|--------------|
+| **Long Method** | 長すぎるメソッド | 「10行以内」ルール |
+| **Long Class** | 巨大なクラス | 4分類で責務分離 |
+| **Feature Envy** | 他クラスのデータばかり使う | Tell, Don't Ask（5.6） |
+| **Data Class** | データだけでロジックがない | Rich Domain Model |
+| **Shotgun Surgery** | 1変更が多くのクラスに影響 | Polymorphismで解決 |
+| **Primitive Obsession** | プリミティブ型の乱用 | 値オブジェクト（5.3） |
+| **Switch Statements** | switch文の乱用 | Polymorphism over Switch |
+| **Parallel Inheritance** | 継承階層が並行して増える | 継承禁止 |
+| **Speculative Generality** | 「いつか使うかも」の汎用化 | YAGNI |
+| **Middle Man** | 委譲するだけのクラス | 直接呼び出し |
+
+### Long Method（長いメソッド）
+
+```typescript
+// ❌ Long Method: 何をしているか把握困難
+function processOrder(order: Order): void {
+  // 50行の検証ロジック...
+  // 30行の計算ロジック...
+  // 40行の保存ロジック...
+  // 20行の通知ロジック...
+}
+
+// ✅ 分割: 各メソッドが1つのことをする
+class OrderProcessor {
+  process(order: Order, deps: Dependencies): void {
+    const validated = new OrderValidator().validate(order)
+    const calculated = new OrderCalculator().calculate(validated)
+    new OrderSaver().save(calculated, deps.repository)
+    new OrderNotifier().notify(calculated, deps.mailer)
+  }
+}
+```
+
+**本スキルのルール:** メソッドは10行以内。超える場合は責務を分割。
+
+### Feature Envy（他クラスへの羨望）
+
+```typescript
+// ❌ Feature Envy: Customer のデータばかり使っている
+class OrderPricer {
+  calculateDiscount(order: Order): Money {
+    const customer = order.customer
+    if (customer.loyaltyPoints > 1000 &&
+        customer.membershipYears > 5 &&
+        customer.totalPurchases > 10000) {
+      return order.total.multiply(0.2)
+    }
+    return Money.zero()
+  }
+}
+
+// ✅ ロジックをデータがある場所に移動
+class Customer {
+  isVIP(): boolean {
+    return this.loyaltyPoints > 1000 &&
+           this.membershipYears > 5 &&
+           this.totalPurchases > 10000
+  }
+}
+
+class OrderPricer {
+  calculateDiscount(order: Order): Money {
+    if (order.customer.isVIP()) {
+      return order.total.multiply(0.2)
+    }
+    return Money.zero()
+  }
+}
+```
+
+**本スキルのルール:** 詳細は「5.6 Tell, Don't Ask」で解説。
+
+### Data Class（データクラス）/ Anemic Domain Model（貧血ドメインモデル）
+
+```typescript
+// ❌ Data Class: データだけでロジックがない（貧血ドメインモデル）
+class Order {
+  items: OrderItem[]
+  status: string
+  createdAt: Date
+}
+
+// 計算ロジックは外部の Service にある
+class OrderService {
+  calculateTotal(order: Order): Money { /* ... */ }
+  canBeCancelled(order: Order): boolean { /* ... */ }
+  addItem(order: Order, item: OrderItem): void { /* ... */ }
+}
+
+// ✅ Rich Domain Model: データとロジックが一緒
+class Order {
+  constructor(
+    private readonly items: OrderItem[],
+    private readonly status: OrderStatus,
+    private readonly createdAt: Date
+  ) {}
+  
+  total(): Money {
+    return this.items.reduce((sum, item) => sum.add(item.subtotal()), Money.zero())
+  }
+  
+  canBeCancelled(): boolean {
+    return this.status.allowsCancellation() &&
+           this.createdAt.isWithinLast(24, 'hours')
+  }
+  
+  withItem(item: OrderItem): Order {
+    return new Order([...this.items, item], this.status, this.createdAt)
+  }
+}
+```
+
+**本スキルのルール:**
+- Transition クラスにはロジックを持たせる
+- 「データだけ持っている」クラスは ReadModel のみ
+
+### Shotgun Surgery（散弾銃手術）
+
+```typescript
+// ❌ Shotgun Surgery: 新しい支払い方法を追加すると複数箇所を修正
+// 1. PaymentProcessor.ts
+switch (payment.type) {
+  case 'credit': ...
+  case 'paypal': ...
+  case 'crypto': ...  // ← 追加
+}
+
+// 2. PaymentValidator.ts
+switch (payment.type) {
+  case 'credit': ...
+  case 'paypal': ...
+  case 'crypto': ...  // ← 追加
+}
+
+// 3. PaymentReporter.ts
+switch (payment.type) {
+  case 'credit': ...
+  case 'paypal': ...
+  case 'crypto': ...  // ← 追加
+}
+
+// ✅ Polymorphism: 1箇所に集約
+interface PaymentMethod {
+  process(): Promise<void>
+  validate(): ValidationResult
+  report(): PaymentReport
+}
+
+class CryptoPayment implements PaymentMethod {
+  process(): Promise<void> { /* ... */ }
+  validate(): ValidationResult { /* ... */ }
+  report(): PaymentReport { /* ... */ }
+}
+```
+
+**本スキルのルール:** 「Polymorphism over Switch」で1箇所にまとめる。
+
+### Primitive Obsession（プリミティブ型への執着）
+
+```typescript
+// ❌ Primitive Obsession: string や number を直接使う
+function createUser(
+  email: string,      // メールアドレス
+  phone: string,      // 電話番号
+  age: number,        // 年齢
+  zipCode: string     // 郵便番号
+): User {
+  // email の形式チェックはどこで？
+  // age が負の数だったら？
+  // 呼び出し側で email と phone を逆に渡したら？
+}
+
+// ✅ 値オブジェクトで意味と制約を表現
+function createUser(
+  email: Email,
+  phone: PhoneNumber,
+  age: Age,
+  zipCode: ZipCode
+): User {
+  // 各値オブジェクトが自身の検証を持つ
+  // 型が違うので引数の順序を間違えるとコンパイルエラー
+}
+
+class Email {
+  private constructor(private readonly value: string) {}
+  
+  static create(value: string): Email | ValidationError {
+    if (!value.includes('@')) {
+      return new ValidationError('Invalid email format')
+    }
+    return new Email(value)
+  }
+}
+```
+
+**本スキルのルール:** 詳細は「5.3 Primitive Obsession の回避」で解説。
+
+---
+
 # Part 1: 4分類（Command / Transition / Query / ReadModel）
 
 ## 1.1 なぜ分類が必要か
@@ -2070,6 +2588,329 @@ function getDateRange(): { start: Date; end: Date } {
 const range = getDateRange();
 console.log(range.start, range.end);  // 明確
 ```
+
+---
+
+## 5.6 Tell, Don't Ask
+
+### 原則
+
+> **「オブジェクトにデータを問い合わせて判断するな。判断を依頼せよ」**
+
+「Tell, Don't Ask」は、Pragmatic Programmers の Andy Hunt と Dave Thomas が提唱した原則です。オブジェクト指向設計の核心を突いています。
+
+```typescript
+// ❌ Ask（問い合わせて判断）
+function canShip(order: Order): boolean {
+  // Order のデータを取り出して、外部で判断している
+  if (order.getStatus() === 'paid' &&
+      order.getStock() > 0 &&
+      order.getShippingAddress() !== null) {
+    return true
+  }
+  return false
+}
+
+// ✅ Tell（判断を依頼）
+function canShip(order: Order): boolean {
+  // Order 自身に判断を任せる
+  return order.canShip()
+}
+
+class Order {
+  canShip(): boolean {
+    return this.status === 'paid' &&
+           this.stock > 0 &&
+           this.shippingAddress !== null
+  }
+}
+```
+
+### なぜ Ask がダメなのか
+
+**Feature Envy（他クラスへの羨望）** を引き起こします：
+
+```typescript
+// ❌ Ask: Customer のデータばかり使っている（Feature Envy）
+class DiscountCalculator {
+  calculate(customer: Customer): number {
+    // Customer の内部データを取り出している
+    const years = customer.getMembershipYears()
+    const points = customer.getLoyaltyPoints()
+    const purchases = customer.getTotalPurchases()
+    
+    if (years > 5 && points > 1000 && purchases > 50000) {
+      return 0.2  // 20% OFF
+    } else if (years > 3 && points > 500) {
+      return 0.1  // 10% OFF
+    }
+    return 0
+  }
+}
+```
+
+**問題点:**
+1. **凝集度が低い** — 判断ロジックがデータから離れている
+2. **変更に弱い** — Customer の構造が変わると DiscountCalculator も変更
+3. **再利用できない** — 同じ判断が必要な別の場所でコピペ発生
+4. **カプセル化違反** — Customer の内部構造を外部が知りすぎている
+
+### Tell の実装パターン
+
+```typescript
+// ✅ Tell: ロジックをデータがある場所に移動
+class Customer {
+  private readonly membershipYears: number
+  private readonly loyaltyPoints: number
+  private readonly totalPurchases: number
+  
+  // 判断ロジックはデータと一緒にある
+  discountRate(): number {
+    if (this.isVIP()) {
+      return 0.2
+    } else if (this.isRegular()) {
+      return 0.1
+    }
+    return 0
+  }
+  
+  private isVIP(): boolean {
+    return this.membershipYears > 5 &&
+           this.loyaltyPoints > 1000 &&
+           this.totalPurchases > 50000
+  }
+  
+  private isRegular(): boolean {
+    return this.membershipYears > 3 &&
+           this.loyaltyPoints > 500
+  }
+}
+
+// 使う側はシンプル
+class DiscountCalculator {
+  calculate(customer: Customer): number {
+    return customer.discountRate()  // Tell!
+  }
+}
+```
+
+### Anemic Domain Model（貧血ドメインモデル）
+
+「Ask」パターンを多用すると、**貧血ドメインモデル**になります：
+
+| 貧血ドメインモデル | Rich Domain Model |
+|------------------|-------------------|
+| データだけ持つクラス | データ + ロジック |
+| Service がロジックを持つ | ドメインオブジェクトがロジックを持つ |
+| getter だらけ | 意味のあるメソッド |
+| 手続き型の設計 | オブジェクト指向の設計 |
+
+```typescript
+// ❌ 貧血ドメインモデル
+class Order {
+  status: string
+  items: OrderItem[]
+  shippingAddress: Address | null
+}
+
+class OrderService {
+  canShip(order: Order): boolean { /* ... */ }
+  calculateTotal(order: Order): Money { /* ... */ }
+  addItem(order: Order, item: OrderItem): void { /* ... */ }
+}
+
+// ✅ Rich Domain Model
+class Order {
+  constructor(
+    private readonly status: OrderStatus,
+    private readonly items: OrderItem[],
+    private readonly shippingAddress: Address | null
+  ) {}
+  
+  canShip(): boolean { /* ... */ }
+  total(): Money { /* ... */ }
+  withItem(item: OrderItem): Order { /* ... */ }
+}
+```
+
+### 本スキルとの関係
+
+| 本スキルのルール | Tell, Don't Ask との関係 |
+|----------------|-------------------------|
+| **Transition クラス** | ロジックをドメインオブジェクトに持たせる |
+| **getter 禁止** | Ask を強制的に防ぐ |
+| **1クラス1パブリックメソッド** | 意味のある操作だけを公開 |
+| **4分類** | Service 層の肥大化（貧血モデル）を防ぐ |
+
+---
+
+## 5.7 Law of Demeter（デメテルの法則）
+
+### 原則
+
+> **「直接の友達とだけ話せ」**
+
+Law of Demeter（デメテルの法則）は、1987年にノースイースタン大学の Demeter プロジェクトで提唱された設計原則です。「最小知識の原則（Principle of Least Knowledge）」とも呼ばれます。
+
+**正式な定義:**
+メソッド M が呼び出せるのは、以下のオブジェクトのメソッドだけ：
+1. M を持つオブジェクト自身（`this`）
+2. M の引数として渡されたオブジェクト
+3. M 内で生成されたオブジェクト
+4. M を持つオブジェクトのフィールド
+
+```typescript
+// ❌ デメテルの法則違反: 「友達の友達」と話している
+class OrderProcessor {
+  process(order: Order): void {
+    // order.getCustomer().getAddress().getCity() — 3段階のドットチェーン
+    const city = order.getCustomer().getAddress().getCity()
+    // Order の内部構造を知りすぎている
+  }
+}
+
+// ✅ デメテルの法則遵守: 直接の友達（order）とだけ話す
+class OrderProcessor {
+  process(order: Order): void {
+    const city = order.shippingCity()  // Order に聞く
+  }
+}
+
+class Order {
+  shippingCity(): string {
+    return this.customer.shippingCity()  // Customer に委譲
+  }
+}
+
+class Customer {
+  shippingCity(): string {
+    return this.address.city  // Address のフィールドを返す
+  }
+}
+```
+
+### なぜドットチェーンがダメなのか
+
+**結合度が高くなる:**
+
+```typescript
+// ❌ order.getCustomer().getAddress().getCity()
+// 問題: OrderProcessor は Order, Customer, Address の3つに依存している
+
+// Address の構造が変わったら？
+// - Address.city → Address.location.cityName に変更
+// - OrderProcessor も修正が必要！（本来関係ないのに）
+```
+
+**カプセル化違反:**
+
+```typescript
+// ❌ 内部構造を知りすぎている
+order.getCustomer().getWallet().getBalance().isGreaterThan(price)
+
+// 問題:
+// 1. Order が Customer を持つことを知っている
+// 2. Customer が Wallet を持つことを知っている
+// 3. Wallet が Balance を持つことを知っている
+// 4. Balance に isGreaterThan があることを知っている
+// → 4つのクラスの内部構造に依存！
+```
+
+### ドットチェーンのルール（SKILL.md より）
+
+本スキルでは、ドットチェーンについて以下のルールを設けています：
+
+| ケース | 許容 | 理由 |
+|--------|:----:|------|
+| `order.customer.address.city` | ❌ | 他オブジェクトの内部構造を知りすぎ |
+| `order.items.filter(...).map(...)` | ✅ | 同一コレクションの fluent interface |
+| `result.map(...).flatMap(...)` | ✅ | 同一型のモナドチェーン |
+| `builder.setA(...).setB(...).build()` | ✅ | Builder パターン |
+
+### 解決策: 委譲メソッドを作る
+
+```typescript
+// ❌ 違反
+const total = order.getItems().reduce((sum, item) => 
+  sum + item.getProduct().getPrice() * item.getQuantity(), 0)
+
+// ✅ 遵守
+const total = order.total()
+
+class Order {
+  total(): Money {
+    return this.items.reduce((sum, item) => sum.add(item.subtotal()), Money.zero())
+  }
+}
+
+class OrderItem {
+  subtotal(): Money {
+    return this.product.price.multiply(this.quantity)
+  }
+}
+```
+
+### デメテルの法則と Tell, Don't Ask の関係
+
+両者は同じ問題を異なる角度から見ています：
+
+| 原則 | 視点 | 禁止すること |
+|------|------|------------|
+| **Tell, Don't Ask** | 「何を」 | データを取り出して外部で判断すること |
+| **Law of Demeter** | 「誰と」 | 直接の友達以外と会話すること |
+
+```typescript
+// 両方違反している例
+function isEligibleForDiscount(order: Order): boolean {
+  // Law of Demeter 違反: order → customer → loyalty → points
+  // Tell, Don't Ask 違反: データを取り出して外部で判断
+  return order.getCustomer().getLoyalty().getPoints() > 1000
+}
+
+// 両方遵守している例
+function isEligibleForDiscount(order: Order): boolean {
+  return order.customerIsEligibleForDiscount()  // Tell + 直接の友達
+}
+```
+
+### 本スキルとの関係
+
+| 本スキルのルール | Law of Demeter との関係 |
+|----------------|------------------------|
+| **ドットチェーンのルール** | デメテルの法則を具体化 |
+| **getter 禁止** | ドットチェーンを構造的に防ぐ |
+| **委譲メソッド** | 違反を解消する手段 |
+| **Rich Domain Model** | 必要な操作をオブジェクトに持たせる |
+
+### 例外: Fluent Interface
+
+メソッドチェーンでも、**同じ型を返し続ける**場合は許容されます：
+
+```typescript
+// ✅ 許容: 同じ型（Stream）を返し続ける
+users
+  .filter(u => u.isActive)
+  .map(u => u.email)
+  .filter(e => e.endsWith('@company.com'))
+
+// ✅ 許容: Builder パターン
+new OrderBuilder()
+  .withCustomer(customer)
+  .withItems(items)
+  .withShipping(address)
+  .build()
+
+// ✅ 許容: Result チェーン
+parseInput(raw)
+  .flatMap(validate)
+  .map(transform)
+  .unwrapOr(defaultValue)
+```
+
+**なぜ許容されるか:**
+- 各メソッドが同じ型（または同じインターフェース）を返す
+- 内部構造の詳細を暴露していない
+- 変更があっても影響範囲が限定される
 
 ---
 
