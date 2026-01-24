@@ -1367,7 +1367,7 @@ class Order {
 2. **ドメイン層**: `DraftRingi` コンストラクタはドメイン不変条件のみチェック
 3. **Controller**: 検証後に `new DraftRingi(id, validation.value).submit(repository, clock)`
 
-**詳細な実装例:** Section 11.6「バリデーション結果の集約」を参照。
+**詳細な実装例:** Section 8.6「バリデーション結果の集約」を参照。
 
 **なぜ分離するか:**
 - 入力バリデーション: ユーザーに**全ての**問題を一度に伝えたい（UX向上）
@@ -1551,659 +1551,7 @@ const token = generator.generate(new FixedClock(knownTime), new FakeRandom(known
 - テストで再現可能な結果が必要
 - 時間や乱数を固定できないとテストが不安定になる
 
-### 2.4 テスト戦略
-
-| 依存の種類 | テスト方法 |
-|-----------|-----------|
-| Pure Logic | 依存クラス自体を単体テスト。親クラスは統合テストとして扱う |
-| Configured Logic | 異なる Config を渡してテスト |
-| External Resource | モックを注入してテスト |
-| Non-deterministic | 固定値を返すモックを注入してテスト |
-
-#### Pure Logic のテスト
-
-依存クラス自体を単体テストし、親クラスではモックしない。
-
-```typescript
-// ExpenseValidator の単体テスト
-describe("ExpenseValidator", () => {
-  it("金額が0以下の経費を拒否する", () => {
-    const validator = new ExpenseValidator();
-    const invalidExpense = new ExpenseItem({ amount: Money.of(-100) });
-    expect(validator.isValid(invalidExpense)).toBe(false);
-  });
-
-  it("有効な経費を受け入れる", () => {
-    const validator = new ExpenseValidator();
-    const validExpense = new ExpenseItem({ amount: Money.of(1000), category: "交通費" });
-    expect(validator.isValid(validExpense)).toBe(true);
-  });
-});
-
-// DraftExpenseReport の統合テスト（Validator をモックしない）
-describe("DraftExpenseReport", () => {
-  it("有効な経費精算を申請できる", async () => {
-    const report = await new DraftExpenseReport(validItems, config).submit(mockRepository);
-    expect(report.status).toBe(ExpenseStatus.SUBMITTED);
-  });
-
-  it("無効な経費を含む場合は申請を拒否する", async () => {
-    await expect(
-      new DraftExpenseReport(invalidItems, config).submit(mockRepository)
-    ).rejects.toThrow(ValidationError);
-  });
-});
-```
-
-#### Configured Logic のテスト
-
-異なる設定値でテストし、設定に応じた挙動を検証。
-
-```typescript
-describe("経費精算の上限チェック", () => {
-  it("1件あたり上限5万円の設定で検証", async () => {
-    const config: ExpenseConfig = { maxAmountPerItem: Money.of(50_000) };
-    const items = [new ExpenseItem({ amount: Money.of(30_000) })];
-    
-    const report = await new DraftExpenseReport(items, config).submit(mockRepository);
-    expect(report.status).toBe(ExpenseStatus.SUBMITTED);
-  });
-
-  it("上限を超える経費は拒否される", async () => {
-    const config: ExpenseConfig = { maxAmountPerItem: Money.of(50_000) };
-    const items = [new ExpenseItem({ amount: Money.of(60_000) })];
-    
-    await expect(
-      new DraftExpenseReport(items, config).submit(mockRepository)
-    ).rejects.toThrow("1件あたりの上限を超えています");
-  });
-});
-```
-
-#### External Resource のテスト
-
-InMemory 実装またはモックを使用。
-
-```typescript
-// InMemory Repository（テスト用）
-class InMemoryRingiRepository implements RingiRepository {
-  private ringis = new Map<string, Ringi>();
-
-  async save(ringi: Ringi): Promise<void> {
-    this.ringis.set(ringi.id.value, ringi);
-  }
-
-  async findById(id: RingiId): Promise<Ringi | null> {
-    return this.ringis.get(id.value) ?? null;
-  }
-}
-
-// テスト（正規例は Section 1.1 参照）
-describe("DraftRingi", () => {
-  it("申請後にRepositoryに保存される", async () => {
-    const repository = new InMemoryRingiRepository();
-    const clock = new FixedClock(new Date("2025-01-25"));
-    const id = RingiId.generate();
-    
-    const ringi = await new DraftRingi(id, validData).submit(repository, clock);
-
-    expect(await repository.findById(ringi.id)).toEqual(ringi);
-  });
-});
-```
-
-#### Non-deterministic のテスト
-
-固定値を返す Fake を使用し、再現可能なテストを実現。
-
-```typescript
-// Fake Clock
-class FixedClock implements Clock {
-  constructor(private readonly fixedTime: Date) {}
-
-  now(): Date {
-    return this.fixedTime;
-  }
-}
-
-// テスト
-describe("請求書発行", () => {
-  it("発行日時にClockの時刻が使用される", () => {
-    const fixedTime = new Date("2025-01-31T23:59:59+09:00");
-    const clock = new FixedClock(fixedTime);
-
-    const invoice = new InvoiceFromOrder(order).result(clock);
-
-    expect(invoice.issuedAt).toEqual(fixedTime);
-  });
-});
-```
-
-#### テストピラミッド
-
-```
-         /\
-        /E2E\          <- 最小限（主要フロー）
-       /------\
-      / 統合   \       <- Command のテスト（Repository モック）
-     /----------\
-    /   単体     \     <- Pure Logic, Query のテスト
-   /--------------\
-```
-
-| テスト種類 | 対象 | モック |
-|-----------|------|--------|
-| 単体 | Query, Pure Logic 依存 | なし |
-| 統合 | Command | Repository, Gateway のみ |
-| E2E | ユースケース全体 | なし（実環境） |
-
-### 2.4.1 テストデータ戦略
-
-#### 禁止事項
-
-| 禁止 | 理由 |
-|------|------|
-| **静的 Fixtures** (YAML/JSON ファイル) | テスト間の結合、メンテナンス困難 |
-| **共有 Seeds** (アプリ起動時投入) | 暗黙の依存、変更影響の予測困難 |
-| **テスト間でのデータ共有** | 独立性の欠如 |
-
-**例外**: 不変の参照データ（国コード、通貨コード等）は Seeds を許容。ただし、テストで変更してはならない。
-
-#### 推奨パターン: Test Data Factory
-
-テストデータは **Test Data Factory** パターンで作成せよ。各テストが自身のデータを作成・管理する。
-
-```typescript
-// tests/ringis/RingiTestFactory.ts
-export class RingiTestFactory {
-  private static readonly DEFAULTS: RingiData = {
-    title: 'テスト稟議',
-    amount: Money.of(10000),
-    status: RingiStatus.DRAFT,
-  };
-
-  static draft(overrides?: Partial<RingiData>): DraftRingi {
-    const id = RingiId.generate();
-    const data = { ...RingiTestFactory.DEFAULTS, ...overrides };
-    return DraftRingi.create(id, data).value;
-  }
-
-  static submitted(overrides?: Partial<RingiData>): SubmittedRingi {
-    const draft = RingiTestFactory.draft(overrides);
-    return draft.toSubmitted(new FixedClock(new Date()));
-  }
-}
-
-// テストでの使用
-it('承認できる', async () => {
-  const ringi = RingiTestFactory.submitted({ amount: Money.of(50000) });
-  const repository = new InMemoryRingiRepository();
-  
-  const result = await ringi.approve(repository);
-  
-  expect(result.status).toBe(RingiStatus.APPROVED);
-});
-```
-
-#### Factory の設計ルール
-
-| ルール | 説明 |
-|--------|------|
-| **Aggregate Root 単位** | 1 Factory = 1 Aggregate Root |
-| **状態ごとにメソッド分離** | `draft()`, `submitted()`, `approved()` |
-| **条件分岐禁止** | Factory 内に if/switch を書かない |
-| **20行以内** | 超える場合は Aggregate が複雑すぎる |
-| **明示的な依存** | 他の Factory を暗黙的に呼ばない |
-
-```typescript
-// ❌ Bad: 条件分岐を含む Factory
-const createRingi = (type: 'draft' | 'submitted') => {
-  if (type === 'draft') { ... }
-  else { ... }
-};
-
-// ❌ Bad: 暗黙的な依存
-const createRingi = async () => {
-  const applicant = await EmployeeTestFactory.create(); // 暗黙的!
-  return { applicantId: applicant.id, ... };
-};
-
-// ✅ Good: 状態ごとにメソッド分離、明示的な依存
-class RingiTestFactory {
-  static draft(overrides?) { ... }
-  static submitted(overrides?) { ... }
-  static withApplicant(applicant: Employee, overrides?) { ... }
-}
-```
-
-#### コロケーション
-
-Test Data Factory はテストと同じディレクトリに配置せよ（Section 8 のコロケーションルールに従う）。
-
-```
-src/
-├── MoneyTestFactory.ts           ← 複数ドメインで使用 → src/ 直下
-├── ringis/
-│   ├── DraftRingi.ts
-│   ├── DraftRingi.test.ts
-│   └── RingiTestFactory.ts      ← テストと同じディレクトリ
-└── expenses/
-    ├── ExpenseReport.ts
-    ├── ExpenseReport.test.ts
-    └── ExpenseTestFactory.ts
-```
-
-#### テストデータ戦略の優先順位
-
-| 優先度 | 戦略 | 使用場面 |
-|:------:|------|---------|
-| 1 | **インラインリテラル** | 単純なテスト |
-| 2 | **Test Data Factory** | 複雑なドメインオブジェクト |
-| 3 | **InMemory Repository** | Command のテスト |
-| 4 | **Testcontainers** | ReadModel、SQL検証 |
-| 5 | ~~共有 Fixtures~~ | **使用禁止** |
-
-```typescript
-// 優先度 1: インラインリテラル（単純なテスト）
-it('金額が正しく計算される', () => {
-  const tax = new ConsumptionTaxOn(Money.of(1000)).amount();
-  expect(tax).toEqual(Money.of(100));
-});
-
-// 優先度 2: Test Data Factory（複雑なオブジェクト）
-it('承認フローが正しく動作する', async () => {
-  const ringi = RingiTestFactory.submitted({ amount: Money.of(50000) });
-  // ...
-});
-
-// 優先度 3: InMemory Repository（Command のテスト）
-it('申請後にRepositoryに保存される', async () => {
-  const repository = new InMemoryRingiRepository();
-  const draft = RingiTestFactory.draft();
-  await draft.submit(repository, clock);
-  expect(await repository.findById(draft.id)).toBeDefined();
-});
-
-// 優先度 4: Testcontainers（ReadModel、SQL検証）
-it('複雑なクエリが正しく動作する', async () => {
-  const container = await PostgresTestContainer.start();
-  // SQL固有の挙動を検証
-});
-```
-
-#### DB統合テストのガイドライン
-
-| クラス分類 | 推奨テスト方式 | DB必要？ |
-|-----------|---------------|:--------:|
-| Query | 純粋単体テスト | ❌ |
-| Transition | 純粋単体テスト | ❌ |
-| Command | InMemory Repository | ❌ |
-| ReadModel | Testcontainers | ✅ |
-| Repository実装 | Testcontainers | ✅ |
-
-**原則**: 大半のテストは DB 不要。ReadModel と Repository 実装のテストのみ実 DB を使用。
-
-#### テスト分離の実現
-
-DB統合テストでは、トランザクションロールバックでテスト間の分離を実現。
-
-```typescript
-describe('RingiApproval', () => {
-  let tx: Transaction;
-  
-  beforeEach(async () => {
-    tx = await testDb.beginTransaction();
-  });
-  
-  afterEach(async () => {
-    await tx.rollback();
-  });
-  
-  it('承認後にステータスが更新される', async () => {
-    // Arrange
-    const ringi = await RingiTestFactory.insertSubmitted(tx, { 
-      amount: Money.of(50000) 
-    });
-    
-    // Act
-    await approveRingi(ringi.id, tx);
-    
-    // Assert
-    const updated = await findRingi(ringi.id, tx);
-    expect(updated.status).toBe(RingiStatus.APPROVED);
-  });
-});
-```
-
-#### InMemory Repository の必須化
-
-**すべての Repository Interface に対応する InMemory 実装を用意せよ。**
-
-```typescript
-// Interface（ドメイン層）
-interface RingiRepository {
-  save(ringi: Ringi): Promise<void>;
-  findById(id: RingiId): Promise<Ringi | null>;
-}
-
-// 本番実装（インフラ層）
-class PostgresRingiRepository implements RingiRepository { ... }
-
-// テスト実装（テストディレクトリ）
-class InMemoryRingiRepository implements RingiRepository {
-  private ringis = new Map<string, Ringi>();
-  
-  async save(ringi: Ringi): Promise<void> {
-    this.ringis.set(ringi.id.value, ringi);
-  }
-  
-  async findById(id: RingiId): Promise<Ringi | null> {
-    return this.ringis.get(id.value) ?? null;
-  }
-}
-```
-
-これにより、Command のテストは DB 接続なしで実行可能になる。
-
-### 2.5 外部サービスのテスト戦略
-
-外部サービス（S3、SendGrid、Stripe等）との連携は **Gateway パターン** で抽象化し、テスト種別に応じた適切なテストダブルを選択する。
-
-#### 2.5.1 Gateway パターン
-
-外部サービスへの依存は必ず Gateway interface で抽象化する。
-
-```typescript
-// ❌ Bad: 外部SDKを直接使用
-class DocumentService {
-  constructor(private readonly s3Client: S3Client) {}
-  
-  async upload(file: File): Promise<string> {
-    await this.s3Client.send(new PutObjectCommand({...}));
-    // ...
-  }
-}
-
-// ✅ Good: Gateway で抽象化
-interface FileStorageGateway {
-  upload(file: File): Promise<FileUrl>;
-  download(url: FileUrl): Promise<File>;
-  delete(url: FileUrl): Promise<void>;
-}
-
-class DocumentService {
-  constructor(private readonly storage: FileStorageGateway) {}
-  
-  async upload(file: File): Promise<FileUrl> {
-    return this.storage.upload(file);
-  }
-}
-
-// 本番実装
-class S3FileStorageGateway implements FileStorageGateway {
-  constructor(private readonly s3Client: S3Client) {}
-  
-  async upload(file: File): Promise<FileUrl> {
-    await this.s3Client.send(new PutObjectCommand({...}));
-    return FileUrl.of(`s3://bucket/${file.name}`);
-  }
-  // ...
-}
-```
-
-#### 2.5.2 テストダブル選択マトリクス
-
-| サービス種別 | 例 | 単体テスト | 統合テスト |
-|-------------|-----|-----------|-----------|
-| **ステートフル Storage** | S3, GCS, Azure Blob | **Fake** (InMemory) | LocalStack / Testcontainers |
-| **メッセージキュー** | SQS, RabbitMQ, Kafka | **Fake** (InMemory) | LocalStack / Testcontainers |
-| **通知系** | SendGrid, Twilio, FCM | **Mock** (呼び出し検証) | MailHog（optional） |
-| **課金/決済** | Stripe, PayPal | **Stub** (固定応答) | Sandbox + Contract Test |
-| **外部API** | 天気API, 地図API | **Stub** (固定応答) | Contract Test |
-
-**選択基準:**
-- **Fake**: 状態を持つサービス。InMemory実装でロジックを再現
-- **Mock**: 「呼ばれたこと」の検証が重要。状態は不要
-- **Stub**: 外部の応答形式が重要。固定レスポンスを返す
-
-#### 2.5.3 Fake 実装例（ステートフル Storage）
-
-```typescript
-// src/documents/__tests__/doubles/InMemoryFileStorageGateway.ts
-// テストダブルは対象モジュール内に colocation
-
-export class InMemoryFileStorageGateway implements FileStorageGateway {
-  private readonly files = new Map<string, Buffer>();
-
-  async upload(file: File): Promise<FileUrl> {
-    const url = FileUrl.of(`memory://${file.name}`);
-    this.files.set(url.value, file.content);
-    return url;
-  }
-
-  async download(url: FileUrl): Promise<File> {
-    const content = this.files.get(url.value);
-    if (!content) {
-      throw new FileNotFoundError(url);
-    }
-    return new File(url.fileName, content);
-  }
-
-  async delete(url: FileUrl): Promise<void> {
-    this.files.delete(url.value);
-  }
-
-  // テスト用ヘルパー
-  clear(): void {
-    this.files.clear();
-  }
-
-  has(url: FileUrl): boolean {
-    return this.files.has(url.value);
-  }
-}
-```
-
-#### 2.5.4 Mock 実装例（通知系）
-
-```typescript
-// src/notifications/__tests__/doubles/MockEmailGateway.ts
-
-export class MockEmailGateway implements EmailGateway {
-  private readonly sentEmails: Email[] = [];
-
-  async send(email: Email): Promise<void> {
-    this.sentEmails.push(email);
-  }
-
-  // 検証用メソッド
-  wasSentTo(address: EmailAddress): boolean {
-    return this.sentEmails.some(e => e.to.equals(address));
-  }
-
-  sentCount(): number {
-    return this.sentEmails.length;
-  }
-
-  lastSentEmail(): Email | undefined {
-    return this.sentEmails.at(-1);
-  }
-
-  clear(): void {
-    this.sentEmails.length = 0;
-  }
-}
-
-// テストでの使用
-describe("OrderConfirmationService", () => {
-  it("注文確定時に確認メールを送信する", async () => {
-    const emailGateway = new MockEmailGateway();
-    const service = new OrderConfirmationService(emailGateway);
-
-    await service.confirm(order);
-
-    expect(emailGateway.wasSentTo(order.customer.email)).toBe(true);
-    expect(emailGateway.lastSentEmail()?.subject).toContain("ご注文確認");
-  });
-});
-```
-
-#### 2.5.5 Stub 実装例（課金/決済）
-
-```typescript
-// src/payments/__tests__/doubles/StubPaymentGateway.ts
-
-export class StubPaymentGateway implements PaymentGateway {
-  private nextResponse: PaymentResult = PaymentResult.success("stub-charge-id");
-
-  async charge(amount: Money, card: CardToken): Promise<PaymentResult> {
-    return this.nextResponse;
-  }
-
-  // テスト用: 次の応答を設定
-  willSucceed(chargeId: string = "stub-charge-id"): void {
-    this.nextResponse = PaymentResult.success(chargeId);
-  }
-
-  willFail(reason: PaymentFailureReason): void {
-    this.nextResponse = PaymentResult.failure(reason);
-  }
-
-  willTimeout(): void {
-    this.nextResponse = PaymentResult.timeout();
-  }
-}
-
-// テストでの使用
-describe("CheckoutService", () => {
-  it("決済失敗時にカード拒否エラーを返す", async () => {
-    const paymentGateway = new StubPaymentGateway();
-    paymentGateway.willFail(PaymentFailureReason.CARD_DECLINED);
-    
-    const service = new CheckoutService(paymentGateway);
-    const result = await service.checkout(cart, card);
-
-    expect(result.isFailure()).toBe(true);
-    expect(result.error).toBeInstanceOf(CardDeclinedError);
-  });
-});
-```
-
-#### 2.5.6 テストダブルの配置（Colocation）
-
-```
-src/
-├── documents/
-│   ├── DocumentService.ts
-│   ├── FileStorageGateway.ts          # Interface
-│   ├── S3FileStorageGateway.ts        # 本番実装
-│   └── __tests__/
-│       ├── DocumentService.test.ts
-│       └── doubles/
-│           └── InMemoryFileStorageGateway.ts  # Fake
-├── notifications/
-│   ├── EmailGateway.ts
-│   ├── SendGridEmailGateway.ts
-│   └── __tests__/
-│       └── doubles/
-│           └── MockEmailGateway.ts    # Mock
-└── payments/
-    ├── PaymentGateway.ts
-    ├── StripePaymentGateway.ts
-    └── __tests__/
-        └── doubles/
-            └── StubPaymentGateway.ts  # Stub
-```
-
-**Colocation ルール:**
-- テストダブルは `__tests__/doubles/` に配置
-- 複数モジュールで共有する場合は共通の親ディレクトリに配置（例: `src/__tests__/doubles/`）
-- 共有化は「3箇所以上で使用」を目安とする
-
-#### 2.5.7 統合テスト・Contract Test
-
-**統合テスト（LocalStack / Testcontainers）:**
-
-```typescript
-// src/documents/__tests__/S3FileStorageGateway.integration.test.ts
-import { S3Client } from "@aws-sdk/client-s3";
-import { GenericContainer, StartedTestContainer } from "testcontainers";
-
-describe("S3FileStorageGateway Integration", () => {
-  let container: StartedTestContainer;
-  let gateway: S3FileStorageGateway;
-
-  beforeAll(async () => {
-    container = await new GenericContainer("localstack/localstack")
-      .withExposedPorts(4566)
-      .start();
-    
-    const s3Client = new S3Client({
-      endpoint: `http://localhost:${container.getMappedPort(4566)}`,
-      // ...
-    });
-    gateway = new S3FileStorageGateway(s3Client);
-  }, 60000);
-
-  afterAll(async () => {
-    await container.stop();
-  });
-
-  it("ファイルをアップロードしてダウンロードできる", async () => {
-    const file = new File("test.txt", Buffer.from("hello"));
-    
-    const url = await gateway.upload(file);
-    const downloaded = await gateway.download(url);
-    
-    expect(downloaded.content.toString()).toBe("hello");
-  });
-});
-```
-
-**Contract Test（外部API）:**
-
-```typescript
-// src/payments/__tests__/StripePaymentGateway.contract.test.ts
-// Stripe Sandbox を使用した Contract Test
-
-describe("StripePaymentGateway Contract", () => {
-  const gateway = new StripePaymentGateway(process.env.STRIPE_TEST_KEY!);
-
-  it("テストカードで決済が成功する", async () => {
-    const result = await gateway.charge(
-      Money.of(1000, "JPY"),
-      CardToken.of("tok_visa")  // Stripe テストトークン
-    );
-    
-    expect(result.isSuccess()).toBe(true);
-  });
-
-  it("拒否カードで決済が失敗する", async () => {
-    const result = await gateway.charge(
-      Money.of(1000, "JPY"),
-      CardToken.of("tok_chargeDeclined")
-    );
-    
-    expect(result.isFailure()).toBe(true);
-    expect(result.error.reason).toBe(PaymentFailureReason.CARD_DECLINED);
-  });
-});
-```
-
-**テスト実行の分離:**
-
-```json
-// package.json
-{
-  "scripts": {
-    "test": "vitest run",
-    "test:integration": "vitest run --config vitest.integration.config.ts",
-    "test:contract": "vitest run --config vitest.contract.config.ts"
-  }
-}
-```
-
-### 2.6 完全な実装例
+### 2.4 完全な実装例
 
 ```typescript
 // Immutable Config
@@ -2560,7 +1908,7 @@ function getPosition(): { x: number; y: number }
 
 | 例外 | 理由 | 例 |
 |------|------|-----|
-| 言語イディオム | Section 0.3 で定義済み | Go の `(T, error)` |
+| 言語イディオム | 「Go での緩和ルール」で定義済み | Go の `(T, error)` |
 | フレームワークAPI（境界層） | 外部APIの消費 | React hooks `[state, setState]` |
 | 内部実装 | 即時分解、private メソッド | `const [a, b] = line.split(',')` |
 
@@ -2620,7 +1968,7 @@ public parseRow(line: string): ParsedTransaction {
 | フォーマット制約 → 専用型 | 順序依存 → 名前付き型 |
 | 同じ型で意味が異なる → 専用型 | 同じ型のタプル → 名前付き型 |
 
-### Section 11 (Result型) との関係
+### Section 8 (Result型) との関係
 
 `Result<T, E>` は許容される理由:
 
@@ -2638,134 +1986,14 @@ type BadResult<T, E> = [boolean, T | E]; // ❌ これは禁止
 
 | 言語 | 緩和ルール |
 |------|-----------|
-| Go | `(T, error)` パターンは許容（Section 0.3 で定義済み） |
+| Go | `(T, error)` パターンは許容（「Go での緩和ルール」で定義済み） |
 | Python | `tuple[A, B]` より `NamedTuple` または `dataclass` を推奨 |
 | Rust | `(A, B)` より `struct` を推奨。ただし `Result<T, E>` は標準 |
 | TypeScript | 生タプル禁止。`interface` または `type` で名前付け |
 
-## 8. Directory Structure: Concept-based MECE Tree
+## 8. エラー処理
 
-### 禁止: アーキテクチャレイヤー名
-
-**ディレクトリ名**に以下を使うな:
-
-```
-❌ domain/        ❌ infrastructure/   ❌ application/
-❌ presentation/  ❌ usecase/          ❌ entity/
-❌ core/          ❌ common/           ❌ shared/
-❌ services/      ❌ repositories/     ❌ controllers/
-```
-
-**ファイル名・クラス名**には技術的役割を含めてよい:
-
-```
-✅ order_store.py       # ファイル名はOK
-✅ OrderStore           # クラス名はOK
-❌ stores/order.py      # ディレクトリ名はNG
-```
-
-#### 共通コードの配置（コロケーションルールの適用）
-
-**例外なし**。共通コードもコロケーションルールをそのまま適用する。
-
-| 使用範囲 | 配置場所 |
-|---------|---------|
-| 1つのドメインでのみ使用 | そのドメインに配置 |
-| 複数のドメインで使用 | 共通の親ディレクトリに配置 |
-
-**禁止:**
-- `common/`, `shared/`, `utils/` 等の汎用フォルダ
-- 「とりあえず共通」という理由での配置
-
-```
-✅ Good: コロケーションルールに従う
-src/
-├── DomainError.ts        ← 全ドメインで使う → src/ 直下
-├── Money.ts              ← 全ドメインで使う → src/ 直下
-├── ringis/
-│   └── RingiErrors.ts    ← ringis でのみ使う
-├── expenses/
-│   └── ExpenseErrors.ts  ← expenses でのみ使う
-└── approvals/
-
-❌ Bad: 汎用フォルダ化
-src/
-├── common/               ← 何でも入れる汎用フォルダ化
-│   ├── utils.ts          ← 責務不明確
-│   └── helpers.ts        ← 責務不明確
-```
-
-### Screaming Architecture
-
-ディレクトリを見れば「何のシステムか」が分かるようにせよ。
-
-```
-❌ Bad: 何のシステムか不明
-src/
-├── domain/
-├── infrastructure/
-└── application/
-
-✅ Good: 経費精算システムだと一目で分かる
-src/
-├── expense-reports/     # 経費精算
-├── approvals/           # 承認ワークフロー
-├── employees/           # 社員マスタ
-├── departments/         # 部署マスタ
-└── monthly-closing/     # 月次締め処理
-
-✅ Good: 稟議システム
-src/
-├── ringis/              # 稟議
-├── approval-routes/     # 承認ルート
-├── notifications/       # 通知
-└── reports/             # レポート
-```
-
-### MECE Tree Decomposition
-
-1. 各概念は1つの分類にのみ属させよ (Mutually Exclusive)
-2. 全ての概念がいずれかの分類に属させよ (Collectively Exhaustive)
-3. 各ディレクトリの子は5つ以下にせよ (Rule of 5)
-
-### Colocation
-
-ソースとテストは同ディレクトリに同居させよ（FW制約がない限り）。
-
-## 9. パフォーマンス考慮
-
-本スキルはオブジェクト生成を多用する。以下の点に注意せよ:
-
-```typescript
-// ⚠️ ホットパスでの毎回インスタンス生成に注意
-for (const ringi of allRingis) {  // 10万件ループ
-  if (new ApprovalDeadlineCheck(ringi).isOverdue()) {  // 毎回生成
-    // ...
-  }
-}
-
-// ✅ パフォーマンスが問題になる場合は設計を調整
-const checker = new ApprovalDeadlineChecker();
-for (const ringi of allRingis) {
-  if (checker.isOverdue(ringi)) {
-    // ...
-  }
-}
-```
-
-**方針:** まず正しく書き、計測して問題があれば最適化する。
-
-## 10. 既存プロジェクトへの適用
-
-一度に全て変更するな。以下の順序で段階的に適用せよ:
-
-1. **新規コード:** 本スキルに従って書け
-2. **変更するコード:** 変更箇所のみリファクタリングせよ
-3. **大規模リファクタ:** チームで合意後、モジュール単位で実施せよ
-
-## 11. エラー処理
-
-### 11.1 Result 型の定義
+### 8.1 Result 型の定義
 
 ビジネスエラーは「想定内の失敗」であり、例外的状況ではない。Result 型で表現する。
 
@@ -2908,7 +2136,7 @@ if (!result.ok) {
 
 **注意:** neverthrow や fp-ts は導入しない。学習コストを考慮し、上記の軽量な実装で十分。
 
-### 11.1.2 interface vs type の使い分け
+### 8.1.2 interface vs type の使い分け
 
 TypeScript では `interface` と `type` のどちらでもオブジェクトの形状を定義できるが、用途に応じて使い分けよ。
 
@@ -2972,7 +2200,7 @@ class PostgresRingiRepository implements RingiRepository {
 }
 ```
 
-### 11.2 エラー型の分類
+### 8.2 エラー型の分類
 
 #### DomainError: 判別共用体
 
@@ -2986,7 +2214,7 @@ class PostgresRingiRepository implements RingiRepository {
 | `code` | 具体的なエラー識別子 | `'RINGI_NOT_FOUND'` | ログ、モニタリング、フロントエンド |
 
 ```typescript
-// エラーの基本構造（type を使用。理由は Section 11.1.2 参照）
+// エラーの基本構造（type を使用。理由は Section 8.1.2 参照）
 type DomainErrorBase = {
   readonly _tag: string;      // 基底エラー型（HTTP ステータス決定用）
   readonly code: string;      // 具体的なエラーコード（識別用）
@@ -3058,7 +2286,7 @@ abstract class InfrastructureError extends Error {
 | InfrastructureError (retryable) | 503 | 一時的障害 |
 | InfrastructureError (!retryable) | 500 | 恒久的障害 |
 
-### 11.3 エラー作成ヘルパー
+### 8.3 エラー作成ヘルパー
 
 ファクトリ関数でエラーオブジェクトを作成する。
 
@@ -3108,7 +2336,7 @@ const RingiErrors = {
 };
 ```
 
-### 11.4 どこで何を返すか
+### 8.4 どこで何を返すか
 
 | 場所 | 返すもの | 例 |
 |------|---------|-----|
@@ -3209,7 +2437,7 @@ class TaxOn {
 }
 ```
 
-### 11.5 エラー情報の構造
+### 8.5 エラー情報の構造
 
 #### 必須プロパティ
 
@@ -3241,7 +2469,7 @@ const error = RingiErrors.amountExceeded(
 // Result.err(error) で返す
 ```
 
-### 11.6 バリデーション結果の集約（境界層）
+### 8.6 バリデーション結果の集約（境界層）
 
 複数の入力バリデーションエラーを集約する。`Result<T, ValidationError>` を使用。
 
@@ -3293,7 +2521,7 @@ if (!result.ok) {
 const draftResult = DraftRingi.create(RingiId.generate(), result.value);
 ```
 
-### 11.7 Pending Object Pattern との関係
+### 8.7 Pending Object Pattern との関係
 
 状態遷移は Result を返す。「却下」のような**正常な状態遷移**も成功として返す。
 
@@ -3334,7 +2562,7 @@ class AwaitingApproval {
 | インフラ障害 | `InfrastructureError` を throw（境界層で catch） |
 | 正常な状態遷移（却下等） | `Result.ok(新しい状態)` を返す |
 
-### 11.8 境界層でのエラーハンドリング
+### 8.8 境界層でのエラーハンドリング
 
 境界層は以下の責務を持つ:
 1. 入力バリデーション（Result型）
@@ -3357,9 +2585,9 @@ async function withInfraResult<T>(
 }
 ```
 
-**実装例:** Section 11.13「Controller 実装パターン」を参照。
+**実装例:** Section 8.13「Controller 実装パターン」を参照。
 
-### 11.9 InfrastructureError と cause
+### 8.9 InfrastructureError と cause
 
 InfrastructureError は元の例外を `cause` として保持せよ。
 
@@ -3386,7 +2614,7 @@ class PostgresRingiRepository implements RingiRepository {
 }
 ```
 
-### 11.10 専用エラー型の作成基準
+### 8.10 専用エラー型の作成基準
 
 #### 判断フロー
 
@@ -3435,7 +2663,7 @@ const RingiErrors = {
 };
 ```
 
-### 11.11 エラー型の配置（Colocation）
+### 8.11 エラー型の配置（Colocation）
 
 #### 基本構造
 
@@ -3504,7 +2732,7 @@ export const RingiErrors = {
 };
 ```
 
-### 11.12 InfrastructureError のリトライ戦略
+### 8.12 InfrastructureError のリトライ戦略
 
 InfrastructureError は `retryable` と `suggestedRetryAfterMs` プロパティを持つ。
 
@@ -3538,7 +2766,7 @@ class InvalidConfigurationError extends InfrastructureError {
 | レート制限 | `true` | API指定値 |
 | 設定ミス | `false` | - |
 
-### 11.13 Controller 実装パターン（統合）
+### 8.13 Controller 実装パターン（統合）
 
 境界層では以下を統合する:
 1. 入力バリデーション（Result型）
@@ -3625,7 +2853,7 @@ function toInfraErrorResponse(error: InfrastructureError): Response {
 }
 ```
 
-### 11.14 新規プロジェクト vs 既存プロジェクト
+### 8.14 新規プロジェクト vs 既存プロジェクト
 
 | プロジェクト | 推奨アプローチ |
 |-------------|---------------|
@@ -3681,7 +2909,7 @@ interface DomainErrorBase {
   readonly message: string;
 }
 
-// 基底エラー型を定義...（Section 11.2 参照）
+// 基底エラー型を定義...（Section 8.2 参照）
 ```
 
 ##### Step 2: 既存エラークラスをマッピング
@@ -3795,7 +3023,779 @@ it('金額超過時にエラーを返す', () => {
 
 ---
 
-## 12. フレームワーク別ガイダンス
+## 9. テスト戦略
+
+| 依存の種類 | テスト方法 |
+|-----------|-----------|
+| Pure Logic | 依存クラス自体を単体テスト。親クラスは統合テストとして扱う |
+| Configured Logic | 異なる Config を渡してテスト |
+| External Resource | モックを注入してテスト |
+| Non-deterministic | 固定値を返すモックを注入してテスト |
+
+### 9.1 Pure Logic のテスト
+
+依存クラス自体を単体テストし、親クラスではモックしない。
+
+```typescript
+// ExpenseValidator の単体テスト
+describe("ExpenseValidator", () => {
+  it("金額が0以下の経費を拒否する", () => {
+    const validator = new ExpenseValidator();
+    const invalidExpense = new ExpenseItem({ amount: Money.of(-100) });
+    expect(validator.isValid(invalidExpense)).toBe(false);
+  });
+
+  it("有効な経費を受け入れる", () => {
+    const validator = new ExpenseValidator();
+    const validExpense = new ExpenseItem({ amount: Money.of(1000), category: "交通費" });
+    expect(validator.isValid(validExpense)).toBe(true);
+  });
+});
+
+// DraftExpenseReport の統合テスト（Validator をモックしない）
+describe("DraftExpenseReport", () => {
+  it("有効な経費精算を申請できる", async () => {
+    const report = await new DraftExpenseReport(validItems, config).submit(mockRepository);
+    expect(report.status).toBe(ExpenseStatus.SUBMITTED);
+  });
+
+  it("無効な経費を含む場合は申請を拒否する", async () => {
+    await expect(
+      new DraftExpenseReport(invalidItems, config).submit(mockRepository)
+    ).rejects.toThrow(ValidationError);
+  });
+});
+```
+
+### 9.2 Configured Logic のテスト
+
+異なる設定値でテストし、設定に応じた挙動を検証。
+
+```typescript
+describe("経費精算の上限チェック", () => {
+  it("1件あたり上限5万円の設定で検証", async () => {
+    const config: ExpenseConfig = { maxAmountPerItem: Money.of(50_000) };
+    const items = [new ExpenseItem({ amount: Money.of(30_000) })];
+    
+    const report = await new DraftExpenseReport(items, config).submit(mockRepository);
+    expect(report.status).toBe(ExpenseStatus.SUBMITTED);
+  });
+
+  it("上限を超える経費は拒否される", async () => {
+    const config: ExpenseConfig = { maxAmountPerItem: Money.of(50_000) };
+    const items = [new ExpenseItem({ amount: Money.of(60_000) })];
+    
+    await expect(
+      new DraftExpenseReport(items, config).submit(mockRepository)
+    ).rejects.toThrow("1件あたりの上限を超えています");
+  });
+});
+```
+
+### 9.3 External Resource のテスト
+
+InMemory 実装またはモックを使用。
+
+```typescript
+// InMemory Repository（テスト用）
+class InMemoryRingiRepository implements RingiRepository {
+  private ringis = new Map<string, Ringi>();
+
+  async save(ringi: Ringi): Promise<void> {
+    this.ringis.set(ringi.id.value, ringi);
+  }
+
+  async findById(id: RingiId): Promise<Ringi | null> {
+    return this.ringis.get(id.value) ?? null;
+  }
+}
+
+// テスト（正規例は Section 1.1 参照）
+describe("DraftRingi", () => {
+  it("申請後にRepositoryに保存される", async () => {
+    const repository = new InMemoryRingiRepository();
+    const clock = new FixedClock(new Date("2025-01-25"));
+    const id = RingiId.generate();
+    
+    const ringi = await new DraftRingi(id, validData).submit(repository, clock);
+
+    expect(await repository.findById(ringi.id)).toEqual(ringi);
+  });
+});
+```
+
+### 9.4 Non-deterministic のテスト
+
+固定値を返す Fake を使用し、再現可能なテストを実現。
+
+```typescript
+// Fake Clock
+class FixedClock implements Clock {
+  constructor(private readonly fixedTime: Date) {}
+
+  now(): Date {
+    return this.fixedTime;
+  }
+}
+
+// テスト
+describe("請求書発行", () => {
+  it("発行日時にClockの時刻が使用される", () => {
+    const fixedTime = new Date("2025-01-31T23:59:59+09:00");
+    const clock = new FixedClock(fixedTime);
+
+    const invoice = new InvoiceFromOrder(order).result(clock);
+
+    expect(invoice.issuedAt).toEqual(fixedTime);
+  });
+});
+```
+
+### 9.5 テストピラミッド
+
+```
+         /\
+        /E2E\          <- 最小限（主要フロー）
+       /------\
+      / 統合   \       <- Command のテスト（Repository モック）
+     /----------\
+    /   単体     \     <- Pure Logic, Query のテスト
+   /--------------\
+```
+
+| テスト種類 | 対象 | モック |
+|-----------|------|--------|
+| 単体 | Query, Pure Logic 依存 | なし |
+| 統合 | Command | Repository, Gateway のみ |
+| E2E | ユースケース全体 | なし（実環境） |
+
+### 9.6 テストデータ戦略
+
+#### 禁止事項
+
+| 禁止 | 理由 |
+|------|------|
+| **静的 Fixtures** (YAML/JSON ファイル) | テスト間の結合、メンテナンス困難 |
+| **共有 Seeds** (アプリ起動時投入) | 暗黙の依存、変更影響の予測困難 |
+| **テスト間でのデータ共有** | 独立性の欠如 |
+
+**例外**: 不変の参照データ（国コード、通貨コード等）は Seeds を許容。ただし、テストで変更してはならない。
+
+#### 推奨パターン: Test Data Factory
+
+テストデータは **Test Data Factory** パターンで作成せよ。各テストが自身のデータを作成・管理する。
+
+```typescript
+// tests/ringis/RingiTestFactory.ts
+export class RingiTestFactory {
+  private static readonly DEFAULTS: RingiData = {
+    title: 'テスト稟議',
+    amount: Money.of(10000),
+    status: RingiStatus.DRAFT,
+  };
+
+  static draft(overrides?: Partial<RingiData>): DraftRingi {
+    const id = RingiId.generate();
+    const data = { ...RingiTestFactory.DEFAULTS, ...overrides };
+    return DraftRingi.create(id, data).value;
+  }
+
+  static submitted(overrides?: Partial<RingiData>): SubmittedRingi {
+    const draft = RingiTestFactory.draft(overrides);
+    return draft.toSubmitted(new FixedClock(new Date()));
+  }
+}
+
+// テストでの使用
+it('承認できる', async () => {
+  const ringi = RingiTestFactory.submitted({ amount: Money.of(50000) });
+  const repository = new InMemoryRingiRepository();
+  
+  const result = await ringi.approve(repository);
+  
+  expect(result.status).toBe(RingiStatus.APPROVED);
+});
+```
+
+#### Factory の設計ルール
+
+| ルール | 説明 |
+|--------|------|
+| **Aggregate Root 単位** | 1 Factory = 1 Aggregate Root |
+| **状態ごとにメソッド分離** | `draft()`, `submitted()`, `approved()` |
+| **条件分岐禁止** | Factory 内に if/switch を書かない |
+| **20行以内** | 超える場合は Aggregate が複雑すぎる |
+| **明示的な依存** | 他の Factory を暗黙的に呼ばない |
+
+```typescript
+// ❌ Bad: 条件分岐を含む Factory
+const createRingi = (type: 'draft' | 'submitted') => {
+  if (type === 'draft') { ... }
+  else { ... }
+};
+
+// ❌ Bad: 暗黙的な依存
+const createRingi = async () => {
+  const applicant = await EmployeeTestFactory.create(); // 暗黙的!
+  return { applicantId: applicant.id, ... };
+};
+
+// ✅ Good: 状態ごとにメソッド分離、明示的な依存
+class RingiTestFactory {
+  static draft(overrides?) { ... }
+  static submitted(overrides?) { ... }
+  static withApplicant(applicant: Employee, overrides?) { ... }
+}
+```
+
+#### コロケーション
+
+Test Data Factory はテストと同じディレクトリに配置せよ（Section 10 のコロケーションルールに従う）。
+
+```
+src/
+├── MoneyTestFactory.ts           ← 複数ドメインで使用 → src/ 直下
+├── ringis/
+│   ├── DraftRingi.ts
+│   ├── DraftRingi.test.ts
+│   └── RingiTestFactory.ts      ← テストと同じディレクトリ
+└── expenses/
+    ├── ExpenseReport.ts
+    ├── ExpenseReport.test.ts
+    └── ExpenseTestFactory.ts
+```
+
+#### テストデータ戦略の優先順位
+
+| 優先度 | 戦略 | 使用場面 |
+|:------:|------|---------|
+| 1 | **インラインリテラル** | 単純なテスト |
+| 2 | **Test Data Factory** | 複雑なドメインオブジェクト |
+| 3 | **InMemory Repository** | Command のテスト |
+| 4 | **Testcontainers** | ReadModel、SQL検証 |
+| 5 | ~~共有 Fixtures~~ | **使用禁止** |
+
+```typescript
+// 優先度 1: インラインリテラル（単純なテスト）
+it('金額が正しく計算される', () => {
+  const tax = new ConsumptionTaxOn(Money.of(1000)).amount();
+  expect(tax).toEqual(Money.of(100));
+});
+
+// 優先度 2: Test Data Factory（複雑なオブジェクト）
+it('承認フローが正しく動作する', async () => {
+  const ringi = RingiTestFactory.submitted({ amount: Money.of(50000) });
+  // ...
+});
+
+// 優先度 3: InMemory Repository（Command のテスト）
+it('申請後にRepositoryに保存される', async () => {
+  const repository = new InMemoryRingiRepository();
+  const draft = RingiTestFactory.draft();
+  await draft.submit(repository, clock);
+  expect(await repository.findById(draft.id)).toBeDefined();
+});
+
+// 優先度 4: Testcontainers（ReadModel、SQL検証）
+it('複雑なクエリが正しく動作する', async () => {
+  const container = await PostgresTestContainer.start();
+  // SQL固有の挙動を検証
+});
+```
+
+#### DB統合テストのガイドライン
+
+| クラス分類 | 推奨テスト方式 | DB必要？ |
+|-----------|---------------|:--------:|
+| Query | 純粋単体テスト | ❌ |
+| Transition | 純粋単体テスト | ❌ |
+| Command | InMemory Repository | ❌ |
+| ReadModel | Testcontainers | ✅ |
+| Repository実装 | Testcontainers | ✅ |
+
+**原則**: 大半のテストは DB 不要。ReadModel と Repository 実装のテストのみ実 DB を使用。
+
+#### テスト分離の実現
+
+DB統合テストでは、トランザクションロールバックでテスト間の分離を実現。
+
+```typescript
+describe('RingiApproval', () => {
+  let tx: Transaction;
+  
+  beforeEach(async () => {
+    tx = await testDb.beginTransaction();
+  });
+  
+  afterEach(async () => {
+    await tx.rollback();
+  });
+  
+  it('承認後にステータスが更新される', async () => {
+    // Arrange
+    const ringi = await RingiTestFactory.insertSubmitted(tx, { 
+      amount: Money.of(50000) 
+    });
+    
+    // Act
+    await approveRingi(ringi.id, tx);
+    
+    // Assert
+    const updated = await findRingi(ringi.id, tx);
+    expect(updated.status).toBe(RingiStatus.APPROVED);
+  });
+});
+```
+
+#### InMemory Repository の必須化
+
+**すべての Repository Interface に対応する InMemory 実装を用意せよ。**
+
+```typescript
+// Interface（ドメイン層）
+interface RingiRepository {
+  save(ringi: Ringi): Promise<void>;
+  findById(id: RingiId): Promise<Ringi | null>;
+}
+
+// 本番実装（インフラ層）
+class PostgresRingiRepository implements RingiRepository { ... }
+
+// テスト実装（テストディレクトリ）
+class InMemoryRingiRepository implements RingiRepository {
+  private ringis = new Map<string, Ringi>();
+  
+  async save(ringi: Ringi): Promise<void> {
+    this.ringis.set(ringi.id.value, ringi);
+  }
+  
+  async findById(id: RingiId): Promise<Ringi | null> {
+    return this.ringis.get(id.value) ?? null;
+  }
+}
+```
+
+これにより、Command のテストは DB 接続なしで実行可能になる。
+
+### 9.7 外部サービスのテスト戦略
+
+外部サービス（S3、SendGrid、Stripe等）との連携は **Gateway パターン** で抽象化し、テスト種別に応じた適切なテストダブルを選択する。
+
+#### 9.7.1 Gateway パターン
+
+外部サービスへの依存は必ず Gateway interface で抽象化する。
+
+```typescript
+// ❌ Bad: 外部SDKを直接使用
+class DocumentService {
+  constructor(private readonly s3Client: S3Client) {}
+  
+  async upload(file: File): Promise<string> {
+    await this.s3Client.send(new PutObjectCommand({...}));
+    // ...
+  }
+}
+
+// ✅ Good: Gateway で抽象化
+interface FileStorageGateway {
+  upload(file: File): Promise<FileUrl>;
+  download(url: FileUrl): Promise<File>;
+  delete(url: FileUrl): Promise<void>;
+}
+
+class DocumentService {
+  constructor(private readonly storage: FileStorageGateway) {}
+  
+  async upload(file: File): Promise<FileUrl> {
+    return this.storage.upload(file);
+  }
+}
+
+// 本番実装
+class S3FileStorageGateway implements FileStorageGateway {
+  constructor(private readonly s3Client: S3Client) {}
+  
+  async upload(file: File): Promise<FileUrl> {
+    await this.s3Client.send(new PutObjectCommand({...}));
+    return FileUrl.of(`s3://bucket/${file.name}`);
+  }
+  // ...
+}
+```
+
+#### 9.7.2 テストダブル選択マトリクス
+
+| サービス種別 | 例 | 単体テスト | 統合テスト |
+|-------------|-----|-----------|-----------|
+| **ステートフル Storage** | S3, GCS, Azure Blob | **Fake** (InMemory) | LocalStack / Testcontainers |
+| **メッセージキュー** | SQS, RabbitMQ, Kafka | **Fake** (InMemory) | LocalStack / Testcontainers |
+| **通知系** | SendGrid, Twilio, FCM | **Mock** (呼び出し検証) | MailHog（optional） |
+| **課金/決済** | Stripe, PayPal | **Stub** (固定応答) | Sandbox + Contract Test |
+| **外部API** | 天気API, 地図API | **Stub** (固定応答) | Contract Test |
+
+**選択基準:**
+- **Fake**: 状態を持つサービス。InMemory実装でロジックを再現
+- **Mock**: 「呼ばれたこと」の検証が重要。状態は不要
+- **Stub**: 外部の応答形式が重要。固定レスポンスを返す
+
+#### 9.7.3 Fake 実装例（ステートフル Storage）
+
+```typescript
+// src/documents/__tests__/doubles/InMemoryFileStorageGateway.ts
+// テストダブルは対象モジュール内に colocation
+
+export class InMemoryFileStorageGateway implements FileStorageGateway {
+  private readonly files = new Map<string, Buffer>();
+
+  async upload(file: File): Promise<FileUrl> {
+    const url = FileUrl.of(`memory://${file.name}`);
+    this.files.set(url.value, file.content);
+    return url;
+  }
+
+  async download(url: FileUrl): Promise<File> {
+    const content = this.files.get(url.value);
+    if (!content) {
+      throw new FileNotFoundError(url);
+    }
+    return new File(url.fileName, content);
+  }
+
+  async delete(url: FileUrl): Promise<void> {
+    this.files.delete(url.value);
+  }
+
+  // テスト用ヘルパー
+  clear(): void {
+    this.files.clear();
+  }
+
+  has(url: FileUrl): boolean {
+    return this.files.has(url.value);
+  }
+}
+```
+
+#### 9.7.4 Mock 実装例（通知系）
+
+```typescript
+// src/notifications/__tests__/doubles/MockEmailGateway.ts
+
+export class MockEmailGateway implements EmailGateway {
+  private readonly sentEmails: Email[] = [];
+
+  async send(email: Email): Promise<void> {
+    this.sentEmails.push(email);
+  }
+
+  // 検証用メソッド
+  wasSentTo(address: EmailAddress): boolean {
+    return this.sentEmails.some(e => e.to.equals(address));
+  }
+
+  sentCount(): number {
+    return this.sentEmails.length;
+  }
+
+  lastSentEmail(): Email | undefined {
+    return this.sentEmails.at(-1);
+  }
+
+  clear(): void {
+    this.sentEmails.length = 0;
+  }
+}
+
+// テストでの使用
+describe("OrderConfirmationService", () => {
+  it("注文確定時に確認メールを送信する", async () => {
+    const emailGateway = new MockEmailGateway();
+    const service = new OrderConfirmationService(emailGateway);
+
+    await service.confirm(order);
+
+    expect(emailGateway.wasSentTo(order.customer.email)).toBe(true);
+    expect(emailGateway.lastSentEmail()?.subject).toContain("ご注文確認");
+  });
+});
+```
+
+#### 9.7.5 Stub 実装例（課金/決済）
+
+```typescript
+// src/payments/__tests__/doubles/StubPaymentGateway.ts
+
+export class StubPaymentGateway implements PaymentGateway {
+  private nextResponse: PaymentResult = PaymentResult.success("stub-charge-id");
+
+  async charge(amount: Money, card: CardToken): Promise<PaymentResult> {
+    return this.nextResponse;
+  }
+
+  // テスト用: 次の応答を設定
+  willSucceed(chargeId: string = "stub-charge-id"): void {
+    this.nextResponse = PaymentResult.success(chargeId);
+  }
+
+  willFail(reason: PaymentFailureReason): void {
+    this.nextResponse = PaymentResult.failure(reason);
+  }
+
+  willTimeout(): void {
+    this.nextResponse = PaymentResult.timeout();
+  }
+}
+
+// テストでの使用
+describe("CheckoutService", () => {
+  it("決済失敗時にカード拒否エラーを返す", async () => {
+    const paymentGateway = new StubPaymentGateway();
+    paymentGateway.willFail(PaymentFailureReason.CARD_DECLINED);
+    
+    const service = new CheckoutService(paymentGateway);
+    const result = await service.checkout(cart, card);
+
+    expect(result.isFailure()).toBe(true);
+    expect(result.error).toBeInstanceOf(CardDeclinedError);
+  });
+});
+```
+
+#### 9.7.6 テストダブルの配置（Colocation）
+
+```
+src/
+├── documents/
+│   ├── DocumentService.ts
+│   ├── FileStorageGateway.ts          # Interface
+│   ├── S3FileStorageGateway.ts        # 本番実装
+│   └── __tests__/
+│       ├── DocumentService.test.ts
+│       └── doubles/
+│           └── InMemoryFileStorageGateway.ts  # Fake
+├── notifications/
+│   ├── EmailGateway.ts
+│   ├── SendGridEmailGateway.ts
+│   └── __tests__/
+│       └── doubles/
+│           └── MockEmailGateway.ts    # Mock
+└── payments/
+    ├── PaymentGateway.ts
+    ├── StripePaymentGateway.ts
+    └── __tests__/
+        └── doubles/
+            └── StubPaymentGateway.ts  # Stub
+```
+
+**Colocation ルール:**
+- テストダブルは `__tests__/doubles/` に配置
+- 複数モジュールで共有する場合は共通の親ディレクトリに配置（例: `src/__tests__/doubles/`）
+- 共有化は「3箇所以上で使用」を目安とする
+
+#### 9.7.7 統合テスト・Contract Test
+
+**統合テスト（LocalStack / Testcontainers）:**
+
+```typescript
+// src/documents/__tests__/S3FileStorageGateway.integration.test.ts
+import { S3Client } from "@aws-sdk/client-s3";
+import { GenericContainer, StartedTestContainer } from "testcontainers";
+
+describe("S3FileStorageGateway Integration", () => {
+  let container: StartedTestContainer;
+  let gateway: S3FileStorageGateway;
+
+  beforeAll(async () => {
+    container = await new GenericContainer("localstack/localstack")
+      .withExposedPorts(4566)
+      .start();
+    
+    const s3Client = new S3Client({
+      endpoint: `http://localhost:${container.getMappedPort(4566)}`,
+      // ...
+    });
+    gateway = new S3FileStorageGateway(s3Client);
+  }, 60000);
+
+  afterAll(async () => {
+    await container.stop();
+  });
+
+  it("ファイルをアップロードしてダウンロードできる", async () => {
+    const file = new File("test.txt", Buffer.from("hello"));
+    
+    const url = await gateway.upload(file);
+    const downloaded = await gateway.download(url);
+    
+    expect(downloaded.content.toString()).toBe("hello");
+  });
+});
+```
+
+**Contract Test（外部API）:**
+
+```typescript
+// src/payments/__tests__/StripePaymentGateway.contract.test.ts
+// Stripe Sandbox を使用した Contract Test
+
+describe("StripePaymentGateway Contract", () => {
+  const gateway = new StripePaymentGateway(process.env.STRIPE_TEST_KEY!);
+
+  it("テストカードで決済が成功する", async () => {
+    const result = await gateway.charge(
+      Money.of(1000, "JPY"),
+      CardToken.of("tok_visa")  // Stripe テストトークン
+    );
+    
+    expect(result.isSuccess()).toBe(true);
+  });
+
+  it("拒否カードで決済が失敗する", async () => {
+    const result = await gateway.charge(
+      Money.of(1000, "JPY"),
+      CardToken.of("tok_chargeDeclined")
+    );
+    
+    expect(result.isFailure()).toBe(true);
+    expect(result.error.reason).toBe(PaymentFailureReason.CARD_DECLINED);
+  });
+});
+```
+
+**テスト実行の分離:**
+
+```json
+// package.json
+{
+  "scripts": {
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:contract": "vitest run --config vitest.contract.config.ts"
+  }
+}
+```
+
+## 10. Directory Structure: Concept-based MECE Tree
+
+### 禁止: アーキテクチャレイヤー名
+
+**ディレクトリ名**に以下を使うな:
+
+```
+❌ domain/        ❌ infrastructure/   ❌ application/
+❌ presentation/  ❌ usecase/          ❌ entity/
+❌ core/          ❌ common/           ❌ shared/
+❌ services/      ❌ repositories/     ❌ controllers/
+```
+
+**ファイル名・クラス名**には技術的役割を含めてよい:
+
+```
+✅ order_store.py       # ファイル名はOK
+✅ OrderStore           # クラス名はOK
+❌ stores/order.py      # ディレクトリ名はNG
+```
+
+#### 共通コードの配置（コロケーションルールの適用）
+
+**例外なし**。共通コードもコロケーションルールをそのまま適用する。
+
+| 使用範囲 | 配置場所 |
+|---------|---------|
+| 1つのドメインでのみ使用 | そのドメインに配置 |
+| 複数のドメインで使用 | 共通の親ディレクトリに配置 |
+
+**禁止:**
+- `common/`, `shared/`, `utils/` 等の汎用フォルダ
+- 「とりあえず共通」という理由での配置
+
+```
+✅ Good: コロケーションルールに従う
+src/
+├── DomainError.ts        ← 全ドメインで使う → src/ 直下
+├── Money.ts              ← 全ドメインで使う → src/ 直下
+├── ringis/
+│   └── RingiErrors.ts    ← ringis でのみ使う
+├── expenses/
+│   └── ExpenseErrors.ts  ← expenses でのみ使う
+└── approvals/
+
+❌ Bad: 汎用フォルダ化
+src/
+├── common/               ← 何でも入れる汎用フォルダ化
+│   ├── utils.ts          ← 責務不明確
+│   └── helpers.ts        ← 責務不明確
+```
+
+### Screaming Architecture
+
+ディレクトリを見れば「何のシステムか」が分かるようにせよ。
+
+```
+❌ Bad: 何のシステムか不明
+src/
+├── domain/
+├── infrastructure/
+└── application/
+
+✅ Good: 経費精算システムだと一目で分かる
+src/
+├── expense-reports/     # 経費精算
+├── approvals/           # 承認ワークフロー
+├── employees/           # 社員マスタ
+├── departments/         # 部署マスタ
+└── monthly-closing/     # 月次締め処理
+
+✅ Good: 稟議システム
+src/
+├── ringis/              # 稟議
+├── approval-routes/     # 承認ルート
+├── notifications/       # 通知
+└── reports/             # レポート
+```
+
+### MECE Tree Decomposition
+
+1. 各概念は1つの分類にのみ属させよ (Mutually Exclusive)
+2. 全ての概念がいずれかの分類に属させよ (Collectively Exhaustive)
+3. 各ディレクトリの子は5つ以下にせよ (Rule of 5)
+
+### Colocation
+
+ソースとテストは同ディレクトリに同居させよ（FW制約がない限り）。
+
+## 11. パフォーマンス考慮
+
+本スキルはオブジェクト生成を多用する。以下の点に注意せよ:
+
+```typescript
+// ⚠️ ホットパスでの毎回インスタンス生成に注意
+for (const ringi of allRingis) {  // 10万件ループ
+  if (new ApprovalDeadlineCheck(ringi).isOverdue()) {  // 毎回生成
+    // ...
+  }
+}
+
+// ✅ パフォーマンスが問題になる場合は設計を調整
+const checker = new ApprovalDeadlineChecker();
+for (const ringi of allRingis) {
+  if (checker.isOverdue(ringi)) {
+    // ...
+  }
+}
+```
+
+**方針:** まず正しく書き、計測して問題があれば最適化する。
+
+## 12. 既存プロジェクトへの適用
+
+一度に全て変更するな。以下の順序で段階的に適用せよ:
+
+1. **新規コード:** 本スキルに従って書け
+2. **変更するコード:** 変更箇所のみリファクタリングせよ
+3. **大規模リファクタ:** チームで合意後、モジュール単位で実施せよ
+
+## 13. フレームワーク別ガイダンス
 
 ### NestJS
 
@@ -3911,7 +3911,7 @@ function RingiForm() {
 
 ---
 
-## 13. アーキテクチャ別の適用
+## 14. アーキテクチャ別の適用
 
 ### モノリス
 
@@ -3969,8 +3969,6 @@ class ConfirmOrder {
 }
 ```
 
----
-
 ## クイックチェックリスト（29項目）
 
 コードレビュー時に使用。詳細は各 Section を参照。
@@ -4003,17 +4001,17 @@ class ConfirmOrder {
 - [ ] **Repository**: `{Entity}Repository`（Interface定義、単一キー検索）
 - [ ] **エラー**: `{Entity}{原因}Error`（Exception禁止）
 
-### エラー処理（Section 11）
+### エラー処理（Section 8）
 - [ ] **DomainError**: 判別共用体（`_tag`, `code`, `message`）で定義されているか
 - [ ] **Result型**: ドメインロジックは `Result<T, E>` を返しているか
 - [ ] **InfrastructureError**: 外部ライブラリのエラーは `extends Error` で例外か
 - [ ] **境界層**: InfrastructureError を catch して Result に変換しているか
 
-### ディレクトリ（Section 8）
+### ディレクトリ（Section 10）
 - [ ] **機能ベース**: 技術層ではなく機能でディレクトリを分けているか
 - [ ] **5つルール**: 各ディレクトリの直接の子は5つ以下か
 
-### テスト（Section 2.4, 2.4.1, 2.5）
+### テスト（Section 9）
 - [ ] **Pure Logic**: 依存クラス自体の単体テストがあるか（親でモック不要に）
 - [ ] **テストデータ独立性**: 各テストが自身のデータを作成・クリーンアップしているか（Fixtures禁止）
 - [ ] **Factory配置**: Test Data Factory がテストとコロケーションされているか
