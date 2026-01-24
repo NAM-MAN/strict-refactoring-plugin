@@ -262,23 +262,27 @@ class DraftRingi {
 ```typescript
 // 稟議: Draft → submit → Submitted（正規例）
 class DraftRingi {
-  constructor(
-    readonly id: RingiId,                        // Identity は最初から持つ
-    private readonly data: ValidatedRingiInput   // 検証済みデータのみ受け取る
-  ) {
-    // ドメイン不変条件のみチェック（入力形式は検証済み前提）
+  private constructor(
+    readonly id: RingiId,
+    private readonly data: ValidatedRingiInput
+  ) {}
+
+  // 静的ファクトリ: ドメインエラーがある場合は Result を返す
+  static create(
+    id: RingiId,
+    data: ValidatedRingiInput
+  ): Result<DraftRingi, RingiAmountExceededError> {
     if (data.amount.isGreaterThan(Money.of(100_000_000))) {
-      throw new RingiAmountExceededError(data.amount);
+      return Result.err(RingiErrors.amountExceeded(id, data.amount, Money.of(100_000_000)));
     }
+    return Result.ok(new DraftRingi(id, data));
   }
 
-  async submit(store: RingiRepository, clock: Clock): Promise<SubmittedRingi> {
-    const submitted = new SubmittedRingi(
-      this.id,           // 同じ ID を引き継ぐ
-      this.data,
-      clock.now()
-    );
-    await store.save(submitted);
+  // Command: ドメインエラーがない場合は Promise<T> を返す
+  // ※ InfrastructureError は throw される（境界層で catch）
+  async submit(repository: RingiRepository, clock: Clock): Promise<SubmittedRingi> {
+    const submitted = new SubmittedRingi(this.id, this.data, clock.now());
+    await repository.save(submitted);
     return submitted;
   }
 }
@@ -286,29 +290,53 @@ class DraftRingi {
 // 使用（境界層）
 const validation = validateRingiInput(req.body);
 if (!validation.ok) {
-  return Response.badRequest({ errors: validation.errors });
+  return Response.badRequest({ errors: validation.error.violations });
 }
-const draft = new DraftRingi(RingiId.generate(), validation.value);
-const submitted = await draft.submit(ringiRepository, systemClock);
+
+const draftResult = DraftRingi.create(RingiId.generate(), validation.value);
+if (!draftResult.ok) {
+  return Response.conflict({ error: draftResult.error });
+}
+
+// ドメインエラーがないので直接 await（InfrastructureError は上位で catch）
+const submitted = await draftResult.value.submit(ringiRepository, systemClock);
 ```
 
 ```typescript
-// 経費精算: 変更申請
+// 経費精算: 変更申請（ドメインエラーがない場合は Promise<T> でよい）
 class ExpenseReportChange {
-  constructor(
+  private constructor(
     private readonly current: ExpenseReport,
     private readonly newItems: ExpenseItem[]
   ) {}
 
+  // 静的ファクトリ: バリデーションエラーがある場合は Result を返す
+  static create(
+    current: ExpenseReport,
+    newItems: ExpenseItem[]
+  ): Result<ExpenseReportChange, ValidationError> {
+    if (newItems.length === 0) {
+      return Result.err(DomainErrors.validation([
+        new ValidationViolation('items', 'REQUIRED', '経費明細は1件以上必要です')
+      ]));
+    }
+    return Result.ok(new ExpenseReportChange(current, newItems));
+  }
+
+  // Command: ドメインエラーがないので Promise<T> を返す
   async apply(repository: ExpenseReportRepository): Promise<ExpenseReport> {
     const updated = this.current.withItems(this.newItems);
-    await repository.save(updated);
+    await repository.save(updated); // InfrastructureError は throw される
     return updated;
   }
 }
 
 // 使用
-const updated = await new ExpenseReportChange(report, newItems).apply(repository);
+const changeResult = ExpenseReportChange.create(report, newItems);
+if (!changeResult.ok) {
+  return Response.badRequest({ error: changeResult.error });
+}
+const updated = await changeResult.value.apply(repository);
 ```
 
 #### 永続化の命名規則
@@ -319,8 +347,8 @@ const updated = await new ExpenseReportChange(report, newItems).apply(repository
 | 外部通信 | `{Service}Gateway` | `{Service}Client`, `{Service}Transport` |
 
 **Repository を使用する理由:**
-- DDD の確立されたパターン名
-- フレームワーク（Spring Data Repository 等）との整合性が高い
+- 業界標準のパターン名（Spring Data Repository, TypeORM Repository 等）
+- フレームワークとの整合性が高い
 - 「Store」は Redux 等の状態管理と混同しやすい
 
 ```typescript
@@ -440,21 +468,25 @@ CQS の定義上は Query に分類されるが、「状態の変換」という
 #### 実装例
 
 ```typescript
-// 検証: Unvalidated → validate → Validated
+// 検証: Unvalidated → validate → Validated（Result を返す）
 class UnvalidatedExpense {
   constructor(private readonly data: ExpenseData) {}
 
-  validate(rules: ExpenseRules): ValidatedExpense {
+  validate(rules: ExpenseRules): Result<ValidatedExpense, ValidationError> {
     const errors = rules.check(this.data);
     if (errors.length > 0) {
-      throw new ValidationError(errors);
+      return Result.err(DomainErrors.validation(errors));
     }
-    return new ValidatedExpense(this.data);
+    return Result.ok(new ValidatedExpense(this.data));
   }
 }
 
 // 使用
-const validated = new UnvalidatedExpense(data).validate(companyRules);
+const result = new UnvalidatedExpense(data).validate(companyRules);
+if (!result.ok) {
+  return Response.badRequest({ errors: result.error.violations });
+}
+const validated = result.value;
 ```
 
 ```typescript
@@ -880,6 +912,81 @@ class ExpenseRuleResolver {
 
 ### 1.6 境界層での条件分岐（許容）
 
+#### 層の定義と責務
+
+本スキルでは3層を定義する。Clean Architecture の4層ではなく、実用的な3層構成を採用。
+
+| 層 | 責務 | 例 |
+|---|------|-----|
+| **境界層** | 外部世界との接点（HTTP, DB, Queue）| Controller, Handler, RepositoryImpl |
+| **アプリケーション層** | ユースケースの調整（トランザクション、複数 Aggregate の協調） | UseCase, ApplicationService |
+| **ドメイン層** | ビジネスルール、状態遷移 | Entity, ValueObject, DomainService |
+
+#### Command（Pending Object）の配置: ドメイン層
+
+**重要:** `DraftRingi.submit()` のような Command はドメイン層に属する。Repository を引数で受け取ることは、ドメイン層がインフラ層に依存することを意味しない。
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 境界層                                                   │
+│   Controller / Handler                                  │
+│     ↓ 呼び出し                                          │
+├─────────────────────────────────────────────────────────┤
+│ アプリケーション層（省略可能）                            │
+│   UseCase（複数 Aggregate の協調が必要な場合）            │
+│     ↓ 呼び出し                                          │
+├─────────────────────────────────────────────────────────┤
+│ ドメイン層                                               │
+│   DraftRingi.submit(repository, clock)                  │
+│     ↓ 依存                                              │
+│   RingiRepository（Interface）← ドメイン層で定義        │
+├─────────────────────────────────────────────────────────┤
+│ インフラ層                                               │
+│   PostgresRingiRepository implements RingiRepository    │
+└─────────────────────────────────────────────────────────┘
+```
+
+**なぜ Command がドメイン層か:**
+1. **依存性逆転原則**: Repository は Interface としてドメイン層で定義。実装はインフラ層
+2. **状態遷移はビジネスルール**: `Draft → Submitted` の遷移条件はドメイン知識
+3. **テスト容易性**: InMemoryRepository を渡せば単体テスト可能
+
+#### アプリケーション層が必要な場合
+
+| ケース | アプリケーション層 | 理由 |
+|--------|:----------------:|------|
+| 単一 Aggregate の操作 | 不要 | Controller → Command で十分 |
+| 複数 Aggregate の協調 | **必要** | トランザクション境界の管理 |
+| 外部サービス連携 | **必要** | Saga パターン等の調整 |
+
+```typescript
+// アプリケーション層が不要な場合（単一 Aggregate）
+// Controller から直接 Command を呼ぶ
+async function submitRingiHandler(req: Request): Promise<Response> {
+  const draft = DraftRingi.create(...);
+  const submitted = await draft.value.submit(repository, clock);
+  return Response.created({ id: submitted.id.value });
+}
+
+// アプリケーション層が必要な場合（複数 Aggregate の協調）
+class ApproveRingiUseCase {
+  async execute(ringiId: RingiId, approverId: EmployeeId): Promise<Result<ApprovedRingi, ApprovalError>> {
+    // トランザクション開始
+    const ringi = await this.ringiRepository.findById(ringiId);
+    const approver = await this.employeeRepository.findById(approverId);
+    
+    // 複数 Aggregate の協調
+    const result = await ringi.approve(approver, this.ringiRepository);
+    if (!result.ok) return result;
+    
+    // 通知（別 Aggregate）
+    await this.notificationService.notifyApproval(result.value);
+    
+    return result;
+  }
+}
+```
+
 #### 境界層の定義
 
 境界層は「外部世界とドメインロジックの接点」である。
@@ -1260,7 +1367,7 @@ class Order {
 2. **ドメイン層**: `DraftRingi` コンストラクタはドメイン不変条件のみチェック
 3. **Controller**: 検証後に `new DraftRingi(id, validation.value).submit(repository, clock)`
 
-**詳細な実装例:** Section 11.5「バリデーション結果の集約」を参照。
+**詳細な実装例:** Section 11.6「バリデーション結果の集約」を参照。
 
 **なぜ分離するか:**
 - 入力バリデーション: ユーザーに**全ての**問題を一度に伝えたい（UX向上）
@@ -1913,52 +2020,31 @@ function createReservation(data: ReservationData): void { /* ... */ }
 ❌ stores/order.py      # ディレクトリ名はNG
 ```
 
-#### `_foundation/` は例外（Shared Kernel）
+#### 共通コードの配置（コロケーションルールの適用）
 
-`_foundation/` ディレクトリは本ルールの**唯一の例外**である。DDD の **Shared Kernel** に相当する。
+**例外なし**。共通コードもコロケーションルールをそのまま適用する。
 
-| 禁止 | 許容 | 理由 |
-|------|------|------|
-| `common/`, `shared/` | `_foundation/` | 「何でも入れる」汎用フォルダではなく、明確な責務を持つ |
+| 使用範囲 | 配置場所 |
+|---------|---------|
+| 1つのドメインでのみ使用 | そのドメインに配置 |
+| 複数のドメインで使用 | 共通の親ディレクトリに配置 |
 
-**`_foundation/` に配置するもの:**
-- エラー基底クラス（`DomainError`, `InfrastructureError`）
-- 値オブジェクト基底（`Money`, `DateRange` 等の共通型）
-- 型定義（`Result<T>`, `ValidationResult<T>` 等）
-
-**`_foundation/` に配置しないもの:**
-- ユーティリティ関数（→ 各ドメインに配置）
-- 設定値（→ `config/` または各ドメイン）
-- ヘルパークラス（→ 使用するドメインに配置）
-
-**Shared Kernel としてのガバナンス:**
-
-| ルール | 理由 |
-|--------|------|
-| 変更には全チームの合意が必要 | foundation の変更は全ドメインに影響 |
-| 最小限に保つ | 迷ったら各ドメインに配置 |
-| 定期的なレビュー | 四半期ごとに「本当に共有が必要か」を見直す |
-
-**配置基準:**
-- 3つ以上のドメインで使用される → `_foundation/`
-- 2つのドメインで使用される → 一方のドメインに配置し、もう一方から参照
-- 1つのドメインでのみ使用 → そのドメインに配置
+**禁止:**
+- `common/`, `shared/`, `utils/` 等の汎用フォルダ
+- 「とりあえず共通」という理由での配置
 
 ```
-✅ Good:
+✅ Good: コロケーションルールに従う
 src/
-├── _foundation/          ← アンダースコアでソート上位に
-│   ├── errors/
-│   │   ├── DomainError.ts
-│   │   └── InfrastructureError.ts
-│   └── types/
-│       ├── Money.ts
-│       └── Result.ts
+├── DomainError.ts        ← 全ドメインで使う → src/ 直下
+├── Money.ts              ← 全ドメインで使う → src/ 直下
 ├── ringis/
+│   └── RingiErrors.ts    ← ringis でのみ使う
 ├── expenses/
+│   └── ExpenseErrors.ts  ← expenses でのみ使う
 └── approvals/
 
-❌ Bad:
+❌ Bad: 汎用フォルダ化
 src/
 ├── common/               ← 何でも入れる汎用フォルダ化
 │   ├── utils.ts          ← 責務不明確
@@ -2035,56 +2121,163 @@ for (const ringi of allRingis) {
 
 ## 11. エラー処理
 
-### 11.1 エラークラスの分類
+### 11.1 Result 型の定義
 
-#### エラー階層
+ビジネスエラーは「想定内の失敗」であり、例外的状況ではない。Result 型で表現する。
 
-```
-Error
-├── DomainError (ビジネスルール違反)
-│   ├── ValidationError (入力検証エラー → 400)
-│   ├── NotFoundError (リソース不存在 → 404)
-│   ├── ConflictError (競合、重複 → 409)
-│   ├── AuthorizationError (権限不足 → 403)
-│   └── BusinessRuleViolationError (その他のビジネスルール → 422)
-│
-└── InfrastructureError (技術的障害)
-    ├── TransientError (一時的障害、リトライ可能 → 503)
-    └── PermanentError (恒久的障害 → 500)
-```
-
-#### HTTP ステータスコードとの対応
-
-| エラー種別 | HTTP Status | 用途 | 例 |
-|-----------|-------------|------|-----|
-| ValidationError | 400 | 入力形式エラー | 必須項目未入力、形式不正 |
-| AuthorizationError | 403 | 権限不足 | 承認権限なし |
-| NotFoundError | 404 | リソース不存在 | 稟議が存在しない |
-| ConflictError | 409 | 競合・重複 | 二重申請、楽観ロック失敗 |
-| BusinessRuleViolationError | 422 | ビジネスルール違反 | 金額上限超過 |
-| TransientError | 503 | 一時的障害 | DB接続タイムアウト |
-| PermanentError | 500 | 恒久的障害 | 設定ミス |
-
-#### 基底クラス
+#### Result 型
 
 ```typescript
-abstract class DomainError extends Error {
-  abstract readonly code: string;
-  
-  constructor(message: string) {
-    super(message);
-    this.name = this.constructor.name;
-    Object.setPrototypeOf(this, new.target.prototype);
-  }
+// Result 型: 成功または失敗を表す判別共用体
+type Result<T, E> = 
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+// Result 作成ヘルパー
+const Result = {
+  ok: <T>(value: T): Result<T, never> => ({ ok: true, value }),
+  err: <E>(error: E): Result<never, E> => ({ ok: false, error }),
+};
+```
+
+#### ヘルパー関数
+
+```typescript
+// map: 成功値を変換
+function map<T, E, U>(result: Result<T, E>, fn: (value: T) => U): Result<U, E> {
+  return result.ok ? Result.ok(fn(result.value)) : result;
 }
 
+// andThen: 成功値に Result を返す関数を適用（チェーン）
+function andThen<T, E, U, F>(
+  result: Result<T, E>,
+  fn: (value: T) => Result<U, F>
+): Result<U, E | F> {
+  return result.ok ? fn(result.value) : result;
+}
+
+// match: 成功・失敗それぞれの処理を実行
+function match<T, E, R>(
+  result: Result<T, E>,
+  handlers: { ok: (value: T) => R; err: (error: E) => R }
+): R {
+  return result.ok ? handlers.ok(result.value) : handlers.err(result.error);
+}
+
+```
+
+#### ヘルパー関数の使用例
+
+```typescript
+// andThen でチェーン: if チェーンより簡潔
+const result = andThen(
+  validateRingiInput(req.body),
+  validated => DraftRingi.create(RingiId.generate(), validated)
+);
+
+if (!result.ok) {
+  return toDomainErrorResponse(result.error);
+}
+const draft = result.value;
+
+// map で成功値を変換
+const idResult = map(draftResult, draft => draft.id.value);
+
+// match でパターンマッチ
+return match(result, {
+  ok: draft => Response.ok({ id: draft.id.value }),
+  err: error => toDomainErrorResponse(error),
+});
+```
+
+#### どちらを使うか
+
+| パターン | 推奨度 | 理由 |
+|---------|--------|------|
+| **if チェック** | 推奨 | 誰でも読める、デバッグしやすい |
+| **andThen チェーン** | 許容 | チームが慣れていれば簡潔 |
+
+```typescript
+// ✅ 推奨: if チェック（明示的）
+const validation = validateRingiInput(req.body);
+if (!validation.ok) return handleError(validation.error);
+
+const draftResult = DraftRingi.create(RingiId.generate(), validation.value);
+if (!draftResult.ok) return handleError(draftResult.error);
+
+// ✅ 許容: andThen チェーン（簡潔だがチーム習熟が必要）
+const result = andThen(
+  validateRingiInput(req.body),
+  v => DraftRingi.create(RingiId.generate(), v)
+);
+```
+
+**注意:** neverthrow や fp-ts は導入しない。学習コストを考慮し、上記の軽量な実装で十分。
+
+### 11.2 エラー型の分類
+
+#### DomainError: 判別共用体
+
+ビジネスエラーは `Error` を継承せず、判別共用体として定義する。
+
+#### `_tag` と `code` の役割分担
+
+| プロパティ | 役割 | 例 | 用途 |
+|-----------|------|-----|------|
+| `_tag` | 基底エラー型（5種類） | `'NotFoundError'` | HTTP ステータス決定、switch 分岐 |
+| `code` | 具体的なエラー識別子 | `'RINGI_NOT_FOUND'` | ログ、モニタリング、フロントエンド |
+
+```typescript
+// エラーの基本構造
+interface DomainErrorBase {
+  readonly _tag: string;      // 基底エラー型（HTTP ステータス決定用）
+  readonly code: string;      // 具体的なエラーコード（識別用）
+  readonly message: string;   // 人間可読メッセージ
+}
+
+// 具体的なエラー型
+type ValidationError = DomainErrorBase & {
+  readonly _tag: 'ValidationError';
+  readonly violations: ValidationViolation[];
+};
+
+type NotFoundError = DomainErrorBase & {
+  readonly _tag: 'NotFoundError';
+  readonly resourceType: string;
+  readonly resourceId: string;
+};
+
+type ConflictError = DomainErrorBase & {
+  readonly _tag: 'ConflictError';
+  readonly existingId?: string;
+};
+
+type AuthorizationError = DomainErrorBase & {
+  readonly _tag: 'AuthorizationError';
+  readonly requiredPermission: string;
+};
+
+type BusinessRuleViolationError = DomainErrorBase & {
+  readonly _tag: 'BusinessRuleViolationError';
+};
+
+// DomainError の共用体
+type DomainError = 
+  | ValidationError 
+  | NotFoundError 
+  | ConflictError 
+  | AuthorizationError 
+  | BusinessRuleViolationError;
+```
+
+#### InfrastructureError: 例外として維持
+
+外部ライブラリは例外を throw するため、InfrastructureError は `Error` を継承する。
+
+```typescript
 abstract class InfrastructureError extends Error {
   abstract readonly code: string;
-  
-  /** リトライ可能かどうか（詳細は 11.11 参照） */
   abstract readonly retryable: boolean;
-  
-  /** 推奨リトライ間隔（ミリ秒）。リトライ不可の場合は undefined */
   abstract readonly suggestedRetryAfterMs?: number;
   
   constructor(message: string, readonly cause?: Error) {
@@ -2093,224 +2286,330 @@ abstract class InfrastructureError extends Error {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
-
-// DomainError のサブクラス（必要に応じて使用）
-abstract class NotFoundError extends DomainError {
-  readonly httpStatus = 404;
-}
-
-abstract class ConflictError extends DomainError {
-  readonly httpStatus = 409;
-}
-
-abstract class AuthorizationError extends DomainError {
-  readonly httpStatus = 403;
-}
-
-abstract class BusinessRuleViolationError extends DomainError {
-  readonly httpStatus = 422;
-}
 ```
 
-**使い分け:**
-- 直接 `DomainError` を継承: シンプルなケース
-- サブクラスを継承: HTTP ステータスコードの自動マッピングが必要な場合
+#### HTTP ステータスコードとの対応
 
-### 11.2 命名規則
+| エラー種別 | HTTP Status | 用途 |
+|-----------|-------------|------|
+| ValidationError | 400 | 入力形式エラー |
+| AuthorizationError | 403 | 権限不足 |
+| NotFoundError | 404 | リソース不存在 |
+| ConflictError | 409 | 競合・重複 |
+| BusinessRuleViolationError | 422 | ビジネスルール違反 |
+| InfrastructureError (retryable) | 503 | 一時的障害 |
+| InfrastructureError (!retryable) | 500 | 恒久的障害 |
 
-| 項目 | 規則 | 例 |
-|------|------|-----|
-| サフィックス | `Error` | ✅ `RingiAmountExceededError` |
-| 命名パターン | `{Entity}{原因}Error` | ✅ `ExpenseReportPolicyViolationError` |
-| 禁止 | `Exception` サフィックス | ❌ `RingiAmountExceededException` |
+### 11.3 エラー作成ヘルパー
+
+ファクトリ関数でエラーオブジェクトを作成する。
 
 ```typescript
-// ✅ Good: Entity + 原因 + Error
-class RingiAmountExceededError extends DomainError {
-  readonly code = "RINGI_AMOUNT_EXCEEDED";
-}
-class RingiApprovalRouteNotFoundError extends DomainError {
-  readonly code = "RINGI_APPROVAL_ROUTE_NOT_FOUND";
-}
-class ExpenseReportPolicyViolationError extends DomainError {
-  readonly code = "EXPENSE_REPORT_POLICY_VIOLATION";
-}
+// ドメイン共通のエラー作成ヘルパー
+const DomainErrors = {
+  validation: (violations: ValidationViolation[]): ValidationError => ({
+    _tag: 'ValidationError',
+    code: 'VALIDATION_ERROR',
+    message: `バリデーションエラー: ${violations.length}件`,
+    violations,
+  }),
+  
+  notFound: (resourceType: string, resourceId: string): NotFoundError => ({
+    _tag: 'NotFoundError',
+    code: `${resourceType.toUpperCase()}_NOT_FOUND`,
+    message: `${resourceType} ${resourceId} が見つかりません`,
+    resourceType,
+    resourceId,
+  }),
+  
+  conflict: (code: string, message: string, existingId?: string): ConflictError => ({
+    _tag: 'ConflictError',
+    code,
+    message,
+    existingId,
+  }),
+};
 
-// ❌ Bad
-class RingiAmountExceededException extends DomainError {}  // Exception禁止
-class AmountExceededError extends DomainError {}           // Entity名なし
+// エンティティ固有のエラー作成ヘルパー（RingiErrors.ts）
+const RingiErrors = {
+  amountExceeded: (ringiId: RingiId, amount: Money, limit: Money) => ({
+    _tag: 'BusinessRuleViolationError' as const,
+    code: 'RINGI_AMOUNT_EXCEEDED',
+    message: `稟議金額 ${amount.value} が上限 ${limit.value} を超えています`,
+    ringiId,
+    amount,
+    limit,
+  }),
+  
+  approvalRouteNotFound: (ringiId: RingiId) => ({
+    _tag: 'BusinessRuleViolationError' as const,
+    code: 'RINGI_APPROVAL_ROUTE_NOT_FOUND',
+    message: `稟議 ${ringiId.value} の承認ルートが設定されていません`,
+    ringiId,
+  }),
+};
 ```
 
-### 11.3 どこで投げるか
+### 11.4 どこで何を返すか
 
-| 場所 | 投げるエラー | 例 |
-|------|------------|-----|
-| Constructor | DomainError | 不変条件違反（Complete Constructor） |
-| Command メソッド | DomainError | ビジネスルール違反 |
-| Repository実装 | InfrastructureError | DB接続失敗 |
-| ReadModel | InfrastructureError | タイムアウト |
+| 場所 | 返すもの | 例 |
+|------|---------|-----|
+| 静的ファクトリ | `Result<T, E>` | `DraftRingi.create(data)` |
+| Command メソッド | `Promise<Result<T, E>>` | `draft.submit(repo)` |
+| Repository実装 | `InfrastructureError` を throw | DB接続失敗 |
+| 境界層 | 例外 → Result 変換 | try-catch wrapper |
 
-#### Query と例外
-
-**原則:** Query は例外を投げない。計算不能な状態は Constructor で検証すべき。
-
-**例外（許容）:**
-- 数学的に不可能な計算（ゼロ除算、オーバーフロー）
-- ランタイムでのみ検出可能なエラー
+#### パターン1: 静的ファクトリメソッド（Constructor 代替）
 
 ```typescript
-// ✅ Good: Constructor で検証
 class TaxOn {
-  constructor(private readonly subtotal: Money) {
+  private constructor(private readonly subtotal: Money) {}
+  
+  // 静的ファクトリで Result を返す
+  static create(subtotal: Money): Result<TaxOn, TaxSubtotalInvalidError> {
     if (subtotal.isNegative()) {
-      throw new TaxSubtotalInvalidError(subtotal);
+      return Result.err({
+        _tag: 'BusinessRuleViolationError',
+        code: 'TAX_SUBTOTAL_INVALID',
+        message: `税計算の対象金額が不正です: ${subtotal.value}`,
+        subtotal,
+      });
     }
-    // rate がゼロの場合は許容（税率0%は有効）
+    return Result.ok(new TaxOn(subtotal));
+  }
+  
+  // Query は常に成功（前提条件は create で検証済み）
+  amount(): Money {
+    return this.subtotal.multiply(0.10);
+  }
+}
+
+// 使用
+const taxResult = TaxOn.create(subtotal);
+if (!taxResult.ok) {
+  return Response.badRequest({ error: taxResult.error });
+}
+const tax = taxResult.value.amount();
+```
+
+#### パターン2: Command でドメインエラーがある場合
+
+ビジネスルール違反が発生する可能性がある Command は `Promise<Result<T, E>>` を返す。
+
+```typescript
+class AwaitingApproval {
+  // ドメインエラーがある場合: Promise<Result<T, E>>
+  async approve(
+    repository: RingiRepository
+  ): Promise<Result<ApprovedRingi, ApprovalExpiredError>> {
+    if (this.isExpired()) {
+      return Result.err(RingiErrors.approvalExpired(this.id));
+    }
+    const approved = ApprovedRingi.from(this);
+    await repository.save(approved);
+    return Result.ok(approved);
+  }
+}
+```
+
+#### パターン3: Command でドメインエラーがない場合
+
+ドメインエラーが発生しない Command は `Promise<T>` を返す。`Result<T, never>` は使わない。
+
+```typescript
+class DraftRingi {
+  // ドメインエラーがない場合: Promise<T>
+  async submit(repository: RingiRepository, clock: Clock): Promise<SubmittedRingi> {
+    const submitted = new SubmittedRingi(this.id, this.data, clock.now());
+    await repository.save(submitted); // InfrastructureError は throw される
+    return submitted;
+  }
+}
+```
+
+**ルール:** `Result<T, never>` は型の嘘。ドメインエラーがないなら `Promise<T>` を使え。
+
+#### Query と Result
+
+**原則:** Query は Result を返さない。計算不能な状態は静的ファクトリで検証すべき。
+
+```typescript
+// ✅ Good: ファクトリで検証済みなので Query は常に成功
+class TaxOn {
+  private constructor(private readonly subtotal: Money) {}
+  
+  static create(subtotal: Money): Result<TaxOn, TaxSubtotalInvalidError> {
+    if (subtotal.isNegative()) {
+      return Result.err({ /* エラー情報 */ });
+    }
+    return Result.ok(new TaxOn(subtotal));
   }
   
   amount(): Money {
     return this.subtotal.multiply(0.10); // 常に成功
   }
 }
-
-// ❌ Bad: Query 内で例外
-class TaxOn {
-  constructor(private readonly subtotal: Money) {}
-  
-  amount(): Money {
-    if (this.subtotal.isNegative()) {
-      throw new TaxSubtotalInvalidError(); // Query で例外は不適切
-    }
-    return this.subtotal.multiply(0.10);
-  }
-}
 ```
 
-### 11.4 エラー情報の構造
+### 11.5 エラー情報の構造
 
 #### 必須プロパティ
 
 | プロパティ | 型 | 用途 |
 |-----------|-----|------|
-| `code` | `string` | エラー識別、ログ分析 |
-| `message` | `string` | 人間可読なメッセージ |
-| `name` | `string` | クラス名（自動設定） |
+| `_tag` | `string` | 判別子（エラー種別の判定） |
+| `code` | `string` | エラーコード（ログ、モニタリング） |
+| `message` | `string` | 人間可読メッセージ |
 
 #### コンテキスト情報（推奨）
 
-デバッグに必要な情報は型付きプロパティとして定義せよ。
+デバッグに必要な情報は追加プロパティとして定義せよ。
 
 ```typescript
-class RingiAmountExceededError extends DomainError {
-  readonly code = "RINGI_AMOUNT_EXCEEDED";
-  
-  constructor(
-    readonly ringiId: RingiId,
-    readonly amount: Money,
-    readonly limit: Money
-  ) {
-    super(`稟議金額(${amount.value})が上限(${limit.value})を超えています`);
-  }
-}
+// エラー型定義
+type RingiAmountExceededError = BusinessRuleViolationError & {
+  readonly code: 'RINGI_AMOUNT_EXCEEDED';
+  readonly ringiId: RingiId;
+  readonly amount: Money;
+  readonly limit: Money;
+};
 
-// 使用
-throw new RingiAmountExceededError(
+// ファクトリ関数で作成
+const error = RingiErrors.amountExceeded(
   ringi.id,
   ringi.amount,
   approver.approvalLimit
 );
+// Result.err(error) で返す
 ```
 
-### 11.5 バリデーション結果の集約（境界層）
+### 11.6 バリデーション結果の集約（境界層）
 
-**適用範囲:** このセクションは境界層での入力バリデーションに適用。ドメイン層ではビジネスルール違反時に例外を投げる。
-
-複数の入力バリデーションエラーを集約する場合は、Result型（ValidationResult）を使用せよ。
+複数の入力バリデーションエラーを集約する。`Result<T, ValidationError>` を使用。
 
 ```typescript
-// ValidationViolation（値オブジェクト、Error を継承しない）
-type ValidationResult<T> = 
-  | { ok: true; value: T }
-  | { ok: false; errors: ValidationViolation[] };
+// ValidationViolation: 個別のバリデーション違反
+class ValidationViolation {
+  constructor(
+    readonly field: string,
+    readonly code: ValidationCode,
+    readonly message: string
+  ) {}
+}
 
-// 境界層での入力バリデーション
+type ValidationCode = 
+  | 'REQUIRED' | 'MAX_LENGTH' | 'MIN_LENGTH'
+  | 'MIN_VALUE' | 'MAX_VALUE' | 'INVALID_FORMAT';
+
+// ValidationResult は Result<T, ValidationError> の特殊形
+type ValidationResult<T> = Result<T, ValidationError>;
+
+// バリデーション関数
 function validateRingiInput(data: unknown): ValidationResult<ValidatedRingiInput> {
-  const errors: ValidationViolation[] = [];
+  const violations: ValidationViolation[] = [];
   
-  // 入力形式のチェック（事前チェック可能）
   if (!data.title) {
-    errors.push(new ValidationViolation('title', 'REQUIRED', '件名は必須です'));
+    violations.push(new ValidationViolation('title', 'REQUIRED', '件名は必須です'));
   }
   if (data.amount === undefined) {
-    errors.push(new ValidationViolation('amount', 'REQUIRED', '金額は必須です'));
+    violations.push(new ValidationViolation('amount', 'REQUIRED', '金額は必須です'));
   } else if (data.amount < 0) {
-    errors.push(new ValidationViolation('amount', 'MIN_VALUE', '金額は0以上です'));
+    violations.push(new ValidationViolation('amount', 'MIN_VALUE', '金額は0以上です'));
   }
   
-  if (errors.length > 0) {
-    return { ok: false, errors };
+  if (violations.length > 0) {
+    return Result.err(DomainErrors.validation(violations));
   }
-  return { ok: true, value: data as ValidatedRingiInput };
+  return Result.ok(data as ValidatedRingiInput);
 }
 
 // 使用（Controller / Handler）
 const result = validateRingiInput(req.body);
 if (!result.ok) {
-  return res.status(400).json({ errors: result.errors });
+  return res.status(400).json({ 
+    code: result.error.code,
+    errors: result.error.violations 
+  });
 }
-// ここから先はドメイン層（例外を使用）
-const draft = new DraftRingi(result.value);
+// ここから先もドメイン層で Result を使用
+const draftResult = DraftRingi.create(RingiId.generate(), result.value);
 ```
 
-**使い分け:** 境界層の入力検証 → Result型、ドメイン層のビジネスルール違反 → 例外。
+### 11.7 Pending Object Pattern との関係
 
-**注意:** neverthrow や fp-ts は導入しない。TypeScriptエコシステムとの整合性、学習コストを考慮し、軽量な discriminated union で十分。
-
-### 11.6 Pending Object Pattern との関係
-
-状態遷移の失敗は例外を投げる。ただし、「却下」のような**正常な状態遷移**は例外ではない。
+状態遷移は Result を返す。「却下」のような**正常な状態遷移**も成功として返す。
 
 ```typescript
-// 例外: ビジネスルール違反（予期しない失敗）
-// ※ 正規例は Section 1.1 参照。ここではエラー処理のみ抜粋
-async submit(repository: RingiRepository): Promise<SubmittedRingi> {
-  if (!this.hasApprovalRoute()) {
-    throw new RingiApprovalRouteNotFoundError(this.id);
-  }
-  // ... 正常処理
-}
-
-// 正常な状態遷移: 却下は例外ではない
 class AwaitingApproval {
-  async reject(reason: string, repository: RingiRepository): Promise<RejectedRingi> {
-    const rejected = RejectedRingi.fromAwaiting(this.ringi, reason);
+  // ビジネスルール違反: Result.err を返す
+  async approve(
+    repository: RingiRepository
+  ): Promise<Result<ApprovedRingi, ApprovalError>> {
+    if (this.isExpired()) {
+      return Result.err({
+        _tag: 'BusinessRuleViolationError',
+        code: 'RINGI_APPROVAL_EXPIRED',
+        message: '承認期限が過ぎています',
+      });
+    }
+    
+    const approved = ApprovedRingi.from(this);
+    await repository.save(approved);
+    return Result.ok(approved);
+  }
+  
+  // 正常な状態遷移: 却下も成功として返す
+  async reject(
+    reason: string,
+    repository: RingiRepository
+  ): Promise<Result<RejectedRingi, never>> {
+    const rejected = RejectedRingi.from(this, reason);
     await repository.save(rejected);
-    return rejected; // 例外ではなく、新しい状態を返す
+    return Result.ok(rejected); // 却下も成功
   }
 }
 ```
 
 | 状況 | 対応 |
 |------|------|
-| ビジネスルール違反（設定ミス等） | DomainError を throw |
-| インフラ障害 | InfrastructureError を throw |
-| 正常な状態遷移（却下、キャンセル等） | 新しい状態オブジェクトを return |
+| ビジネスルール違反 | `Result.err(DomainError)` を返す |
+| インフラ障害 | `InfrastructureError` を throw（境界層で catch） |
+| 正常な状態遷移（却下等） | `Result.ok(新しい状態)` を返す |
 
-### 11.7 境界層でのエラーハンドリング
+### 11.8 境界層でのエラーハンドリング
 
-Controller/Handler でドメインエラーをキャッチし、HTTPレスポンスに変換せよ。
+境界層は以下の責務を持つ:
+1. 入力バリデーション（Result型）
+2. ドメインロジック呼び出し（Result型）
+3. InfrastructureError のキャッチと Result への変換
 
-**HTTP ステータスコードの詳細:** Section 11.1「HTTP ステータスコードとの対応」を参照。
+```typescript
+// InfrastructureError を Result に変換するラッパー
+async function withInfraResult<T>(
+  fn: () => Promise<T>
+): Promise<Result<T, InfrastructureError>> {
+  try {
+    return Result.ok(await fn());
+  } catch (e) {
+    if (e instanceof InfrastructureError) {
+      return Result.err(e);
+    }
+    throw e; // 予期しないエラーは再 throw
+  }
+}
+```
 
-**実装例:** Section 11.12「エラーハンドリングミドルウェア」を参照。
+**実装例:** Section 11.13「Controller 実装パターン」を参照。
 
-### 11.8 InfrastructureError と cause
+### 11.9 InfrastructureError と cause
 
 InfrastructureError は元の例外を `cause` として保持せよ。
 
 ```typescript
 class DatabaseConnectionError extends InfrastructureError {
   readonly code = "DATABASE_CONNECTION_FAILED";
+  readonly retryable = true;
+  readonly suggestedRetryAfterMs = 1000;
   
   constructor(cause: Error) {
     super("データベース接続に失敗しました", cause);
@@ -2329,137 +2628,68 @@ class PostgresRingiRepository implements RingiRepository {
 }
 ```
 
-### 11.9 専用例外クラスの作成基準
+### 11.10 専用エラー型の作成基準
 
 #### 判断フロー
 
-以下の質問に1つでも YES があれば**専用クラス**を作成せよ。すべて NO なら**汎用クラス（ValidationViolation）**を使用せよ。
+以下の質問に1つでも YES があれば**専用型**を作成。すべて NO なら**ValidationViolation**を使用。
 
 | 質問 | 判断基準 |
 |------|---------|
-| Q1: 業務用語として確立している？ | ドメインエキスパートが名前で呼ぶ、業務マニュアルに記載がある |
-| Q2: 特別なリカバリー処理が必要？ | 通常のエラーハンドリングとは異なる対応が必要 |
-| Q3: 異なるHTTPステータスコードを返す？ | 400以外（404, 409, 422, 500等）を返す |
-| Q4: ログ/モニタリングで区別したい？ | アラート設定、ダッシュボード表示で区別 |
+| Q1: 業務用語として確立している？ | ドメインエキスパートが名前で呼ぶ |
+| Q2: 特別なリカバリー処理が必要？ | 通常のエラーハンドリングとは異なる対応 |
+| Q3: 異なるHTTPステータスコードを返す？ | 400以外（404, 409, 422等） |
+| Q4: ログ/モニタリングで区別したい？ | アラート設定、ダッシュボード |
 
 #### 具体例
 
 | ケース | 専用/汎用 | 理由 |
 |--------|----------|------|
-| タイトルが必須 | 汎用 | 技術的制約、400 Bad Request |
-| 金額が負数 | 汎用 | 技術的制約、400 Bad Request |
-| 金額が上限超過 | **専用** | 業務用語「決裁権限超過」、409 Conflict |
-| 承認ルートが見つからない | **専用** | 設定ミス、特別な対応が必要 |
-| 二重登録 | **専用** | 業務用語「重複申請」、409 Conflict |
+| タイトルが必須 | 汎用 | 技術的制約、400 |
+| 金額が上限超過 | **専用** | 業務用語「決裁権限超過」、409 |
+| 承認ルート未設定 | **専用** | 設定ミス、特別な対応 |
 
-#### 専用クラスの実装
+#### 専用エラー型の定義
 
 ```typescript
-// ✅ Good: 専用クラス（業務用語、特別なリカバリー）
-class RingiAmountExceededError extends DomainError {
-  readonly code = "RINGI_AMOUNT_EXCEEDED";
-  
-  constructor(
-    readonly ringiId: RingiId,
-    readonly requestedAmount: Money,
-    readonly maxAmount: Money
-  ) {
-    super(`稟議金額 ${requestedAmount.value} が上限 ${maxAmount.value} を超えています`);
-  }
-}
+// 専用エラー型（ファクトリ関数で作成）
+type RingiAmountExceededError = BusinessRuleViolationError & {
+  readonly code: 'RINGI_AMOUNT_EXCEEDED';
+  readonly ringiId: RingiId;
+  readonly amount: Money;
+  readonly limit: Money;
+};
 
-class RingiDuplicateSubmissionError extends DomainError {
-  readonly code = "RINGI_DUPLICATE_SUBMISSION";
-  
-  constructor(
-    readonly ringiId: RingiId,
-    readonly existingRingiId: RingiId
-  ) {
-    super(`同一内容の稟議が既に申請されています: ${existingRingiId.value}`);
-  }
-}
+// RingiErrors.ts でファクトリを提供
+const RingiErrors = {
+  amountExceeded: (
+    ringiId: RingiId,
+    amount: Money,
+    limit: Money
+  ): RingiAmountExceededError => ({
+    _tag: 'BusinessRuleViolationError',
+    code: 'RINGI_AMOUNT_EXCEEDED',
+    message: `稟議金額 ${amount.value} が上限 ${limit.value} を超えています`,
+    ringiId,
+    amount,
+    limit,
+  }),
+};
 ```
 
-#### ValidationViolation と DomainError の関係
-
-| 種類 | 用途 | 継承 | 使用場面 |
-|------|------|------|---------|
-| `ValidationViolation` | フィールドレベルの入力検証 | なし（値オブジェクト） | 境界層でのバリデーション |
-| `DomainError` | ビジネスルール違反 | Error を継承 | ドメイン層での例外 |
-
-**使い分け:**
-- **ValidationViolation**: 複数のフィールドエラーを集約して返したい場合（Result型と組み合わせ）
-- **DomainError**: 単一のビジネスルール違反で処理を中断したい場合（throw）
-
-```typescript
-// ValidationViolation → DomainError への変換が必要な場合
-class ValidationError extends DomainError {
-  readonly code = "VALIDATION_ERROR";
-  readonly httpStatus = 400;
-  
-  constructor(readonly violations: ValidationViolation[]) {
-    super(`バリデーションエラー: ${violations.length}件`);
-  }
-}
-```
-
-#### 汎用クラス（ValidationViolation）の実装
-
-```typescript
-// バリデーション違反（値オブジェクト、Error を継承しない）
-class ValidationViolation {
-  constructor(
-    readonly field: string,
-    readonly code: ValidationCode,
-    readonly message: string
-  ) {}
-}
-
-// バリデーションコード（型安全）
-type ValidationCode = 
-  | 'REQUIRED'
-  | 'MAX_LENGTH'
-  | 'MIN_LENGTH'
-  | 'MIN_VALUE'
-  | 'MAX_VALUE'
-  | 'INVALID_FORMAT'
-  | 'INVALID_ENUM';
-```
-
-**バリデーション実装:** `validateRingiInput()` のような関数で `ValidationResult<T>` を返す（Section 11.5）。
-
-#### YAGNI原則（優先順位付き判断フロー）
-
-**判断フロー:**
-
-1. **Q3: 異なるHTTPステータスコードを返す？** → YES なら専用クラス（最優先）
-2. **Q1: 業務用語として確立している？** → YES なら専用クラス
-3. **Q2, Q4: 特別な処理/モニタリングが必要？** → YES なら専用クラス
-4. **上記すべて NO** → 汎用クラス（ValidationViolation）で開始
-
-**YAGNI の適用:**
-- Q2, Q4 は「現時点で必要」な場合のみ YES
-- 「将来必要になるかも」は NO として扱う
-- 汎用クラスから専用クラスへの昇格は、実際に必要になった時点で行う
-
-**昇格のコスト軽減:**
-汎用 → 専用への変更を容易にするため、ValidationViolation には code を持たせ、後から専用エラーへのマッピングを追加できるようにしておく。
-
-### 11.10 例外クラスの配置（Colocation）
+### 11.11 エラー型の配置（Colocation）
 
 #### 基本構造
 
 ```
 src/
-├── _foundation/                    ← 基盤（すべてのドメインから参照）
-│   └── errors/
-│       ├── DomainError.ts          ← ドメインエラー基底クラス
-│       ├── InfrastructureError.ts  ← インフラエラー基底クラス
-│       └── ValidationViolation.ts  ← バリデーション違反
+├── result.ts                   ← Result 型とヘルパー関数
+├── errors.ts                   ← DomainError 基底型、InfrastructureError
+├── ValidationViolation.ts      ← バリデーション違反（値オブジェクト）
 │
-├── {entity}/                       ← 各ドメイン
-│   ├── {Entity}.ts                 ← 集約ルート
-│   ├── {Entity}Errors.ts           ← ドメインのエラー
+├── {entity}/
+│   ├── {Entity}.ts             ← エンティティ
+│   ├── {Entity}Errors.ts       ← エラー型とファクトリ
 │   └── ...
 ```
 
@@ -2467,79 +2697,58 @@ src/
 
 | 条件 | 配置 |
 |------|------|
-| 基底クラス（DomainError等） | `_foundation/errors/` |
-| ドメイン固有エラー（5個以下） | `{Entity}Errors.ts` |
-| ドメイン固有エラー（6個以上） | `{entity}/errors/` サブディレクトリ |
-| 複数ドメインで共有 | `_foundation/errors/` |
+| Result 型、基底エラー型 | `src/` 直下 |
+| ドメイン固有エラー型 | `{Entity}Errors.ts` |
+| 複数ドメインで共有 | 共通の親ディレクトリに配置 |
 
 #### {Entity}Errors.ts の実装例
 
 ```typescript
 // src/ringi/RingiErrors.ts
-import { DomainError } from '../_foundation/errors/DomainError';
+import { BusinessRuleViolationError, NotFoundError } from '../errors';
 import { RingiId } from './RingiId';
-import { Money } from '../_foundation/types/Money';
+import { Money } from '../Money';
 
-// 金額超過エラー
-export class RingiAmountExceededError extends DomainError {
-  readonly code = "RINGI_AMOUNT_EXCEEDED";
-  
-  constructor(
-    readonly ringiId: RingiId,
-    readonly requestedAmount: Money,
-    readonly maxAmount: Money
-  ) {
-    super(`稟議金額 ${requestedAmount.value} が上限 ${maxAmount.value} を超えています`);
-  }
-}
+// エラー型定義
+export type RingiAmountExceededError = BusinessRuleViolationError & {
+  readonly code: 'RINGI_AMOUNT_EXCEEDED';
+  readonly ringiId: RingiId;
+  readonly amount: Money;
+  readonly limit: Money;
+};
 
-// 承認ルート未設定エラー
-export class RingiApprovalRouteNotFoundError extends DomainError {
-  readonly code = "RINGI_APPROVAL_ROUTE_NOT_FOUND";
-  
-  constructor(readonly ringiId: RingiId) {
-    super(`稟議 ${ringiId.value} の承認ルートが設定されていません`);
-  }
-}
+export type RingiApprovalRouteNotFoundError = BusinessRuleViolationError & {
+  readonly code: 'RINGI_APPROVAL_ROUTE_NOT_FOUND';
+  readonly ringiId: RingiId;
+};
 
-// 重複申請エラー
-export class RingiDuplicateSubmissionError extends DomainError {
-  readonly code = "RINGI_DUPLICATE_SUBMISSION";
+// ファクトリ関数
+export const RingiErrors = {
+  amountExceeded: (
+    ringiId: RingiId,
+    amount: Money,
+    limit: Money
+  ): RingiAmountExceededError => ({
+    _tag: 'BusinessRuleViolationError',
+    code: 'RINGI_AMOUNT_EXCEEDED',
+    message: `稟議金額 ${amount.value} が上限 ${limit.value} を超えています`,
+    ringiId,
+    amount,
+    limit,
+  }),
   
-  constructor(
-    readonly ringiId: RingiId,
-    readonly existingRingiId: RingiId
-  ) {
-    super(`同一内容の稟議が既に申請されています: ${existingRingiId.value}`);
-  }
-}
+  approvalRouteNotFound: (ringiId: RingiId): RingiApprovalRouteNotFoundError => ({
+    _tag: 'BusinessRuleViolationError',
+    code: 'RINGI_APPROVAL_ROUTE_NOT_FOUND',
+    message: `稟議 ${ringiId.value} の承認ルートが設定されていません`,
+    ringiId,
+  }),
+};
 ```
 
-#### 肥大化した場合の分割
+### 11.12 InfrastructureError のリトライ戦略
 
-```typescript
-// src/ringi/errors/index.ts
-export * from './validation';
-export * from './approval';
-export * from './lifecycle';
-
-// src/ringi/errors/validation.ts
-export class RingiValidationError extends DomainError { ... }
-
-// src/ringi/errors/approval.ts
-export class RingiAmountExceededError extends DomainError { ... }
-export class RingiApprovalRouteNotFoundError extends DomainError { ... }
-
-// src/ringi/errors/lifecycle.ts
-export class RingiDuplicateSubmissionError extends DomainError { ... }
-export class RingiAlreadyApprovedError extends DomainError { ... }
-```
-
-### 11.11 InfrastructureError のリトライ戦略
-
-InfrastructureError は `retryable` と `suggestedRetryAfterMs` プロパティを持つ（基底クラス定義は Section 11.1）。
-
-#### 具体的な実装例
+InfrastructureError は `retryable` と `suggestedRetryAfterMs` プロパティを持つ。
 
 ```typescript
 // リトライ可能: DB接続エラー
@@ -2550,20 +2759,6 @@ class DatabaseConnectionError extends InfrastructureError {
   
   constructor(cause: Error) {
     super('データベース接続に失敗しました', cause);
-  }
-}
-
-// リトライ可能: 外部APIレート制限
-class ExternalApiRateLimitError extends InfrastructureError {
-  readonly code = "EXTERNAL_API_RATE_LIMIT";
-  readonly retryable = true;
-  
-  constructor(readonly retryAfterMs: number, cause?: Error) {
-    super(`レート制限を超えました。${retryAfterMs}ms後にリトライしてください`, cause);
-  }
-  
-  get suggestedRetryAfterMs(): number {
-    return this.retryAfterMs;
   }
 }
 
@@ -2579,145 +2774,266 @@ class InvalidConfigurationError extends InfrastructureError {
 }
 ```
 
-#### InfrastructureError の分類
+| エラー種別 | retryable | suggestedRetryAfterMs |
+|-----------|:---------:|:---------------------:|
+| 一時的な接続障害 | `true` | 1000-5000 |
+| レート制限 | `true` | API指定値 |
+| 設定ミス | `false` | - |
 
-| エラー種別 | retryable | suggestedRetryAfterMs | 例 |
-|-----------|:---------:|:---------------------:|-----|
-| 一時的な接続障害 | `true` | 1000-5000 | DB接続タイムアウト |
-| レート制限 | `true` | API指定値 | 429 Too Many Requests |
-| 外部サービス障害 | `true` | 5000-30000 | 5xx エラー |
-| リソース枯渇 | `true` | 60000+ | ディスク/メモリ不足 |
-| 設定ミス | `false` | - | 接続文字列不正 |
-| 認証エラー | `false` | - | 認証情報無効 |
+### 11.13 Controller 実装パターン（統合）
 
-### 11.12 Result型と例外の使い分け
-
-#### 基本原則: 発生場所で判断せよ
-
-| 発生場所 | 使用するもの | 理由 |
-|---------|------------|------|
-| **境界層**（入力バリデーション） | Result型（ValidationResult） | 複数エラー集約、ユーザーフィードバック |
-| **ドメイン層**（ビジネスルール） | 例外（DomainError） | 単一エラーで処理中断 |
-| **インフラ層**（外部リソース） | 例外（InfrastructureError） | 外部障害 |
-
-#### 判断フロー
-
-```
-このエラーは...
-
-1. どこで発生する？
-   ├─ 境界層（Controller, Handler） → 次へ
-   ├─ ドメイン層（Command, Query） → 例外（DomainError）
-   └─ インフラ層（Store実装, Gateway） → 例外（InfrastructureError）
-
-2. 境界層の場合:
-   ├─ 入力形式のチェック？ → Result型
-   ├─ 複数エラーを集約したい？ → Result型
-   └─ ドメインロジック呼び出し後のエラー → 例外をキャッチしてレスポンス変換
-```
-
-#### 具体例による判断
-
-| ケース | 発生場所 | Result / 例外 | 理由 |
-|--------|---------|:------------:|------|
-| タイトル未入力 | 境界層 | Result | 入力形式チェック |
-| 金額が負数 | 境界層 | Result | 入力形式チェック |
-| 金額が固定上限超過（例: 1億円） | 境界層 | Result | 入力形式チェック（上限値は固定） |
-| 金額が承認者権限超過 | ドメイン層 | 例外 | ビジネスルール（承認者に依存） |
-| 承認ルート未設定 | ドメイン層 | 例外 | 設定ミス |
-| DB接続失敗 | インフラ層 | 例外 | 外部リソース障害 |
-| 二重申請 | ドメイン層 | 例外 | 並行処理による競合 |
-
-**ポイント:**
-- 「金額が上限超過」は**上限の種類**で判断が分かれる
-  - 固定上限（システム全体で1億円まで） → 境界層で Result型
-  - 動的上限（承認者の権限に依存） → ドメイン層で例外
-
-#### 実装パターン
+境界層では以下を統合する:
+1. 入力バリデーション（Result型）
+2. ドメインオブジェクト作成（Result型）
+3. Command 実行（ドメインエラーがあれば Result、なければ直接 await）
+4. InfrastructureError は try-catch でキャッチ
 
 ```typescript
-// Controller（境界層）での使い分け
-async function submitRingi(req: Request): Promise<Response> {
-  // 1. バリデーション（Result型）
-  const validationResult = validateRingiData(req.body);
-  if (!validationResult.ok) {
-    return Response.badRequest({
-      code: 'VALIDATION_ERROR',
-      errors: validationResult.errors.map(e => ({
-        field: e.field,
-        code: e.code,
-        message: e.message
-      }))
-    });
+async function submitRingiHandler(req: Request): Promise<Response> {
+  // 1. 入力バリデーション
+  const validation = validateRingiInput(req.body);
+  if (!validation.ok) {
+    return toDomainErrorResponse(validation.error);
   }
   
-  // 2. Command実行（例外を投げる可能性）※ 正規例は Section 1.1 参照
+  // 2. ドメインオブジェクト作成
+  const draftResult = DraftRingi.create(RingiId.generate(), validation.value);
+  if (!draftResult.ok) {
+    return toDomainErrorResponse(draftResult.error);
+  }
+  
+  // 3. Command 実行
   try {
-    const draft = new DraftRingi(RingiId.generate(), validationResult.value);
-    const ringi = await draft.submit(repository, clock);
-    return Response.created(ringi);
+    // ドメインエラーがない Command は直接 await
+    const submitted = await draftResult.value.submit(repository, clock);
+    return Response.created({ id: submitted.id.value });
   } catch (e) {
-    if (e instanceof RingiAmountExceededError) {
-      return Response.conflict({
-        code: e.code,
-        message: e.message,
-        requestedAmount: e.requestedAmount.value,
-        maxAmount: e.maxAmount.value
-      });
+    // InfrastructureError をキャッチ
+    if (e instanceof InfrastructureError) {
+      return toInfraErrorResponse(e);
     }
-    if (e instanceof DomainError) {
-      return Response.unprocessableEntity({
-        code: e.code,
-        message: e.message
-      });
+    throw e; // 予期しないエラーは再 throw
+  }
+}
+
+// ドメインエラーがある Command の場合
+async function approveRingiHandler(req: Request): Promise<Response> {
+  const ringi = await ringiRepository.findById(RingiId.of(req.params.id));
+  if (!ringi) {
+    return Response.notFound();
+  }
+  
+  try {
+    // ドメインエラーがある Command は Result を返す
+    const result = await ringi.approve(repository);
+    if (!result.ok) {
+      return toDomainErrorResponse(result.error);
     }
-    // InfrastructureError は上位で処理
+    return Response.ok({ id: result.value.id.value });
+  } catch (e) {
+    if (e instanceof InfrastructureError) {
+      return toInfraErrorResponse(e);
+    }
+    throw e;
+  }
+}
+
+// HTTP ステータスコード変換
+function toDomainErrorResponse(error: DomainError): Response {
+  const statusMap: Record<DomainError['_tag'], number> = {
+    ValidationError: 400,
+    NotFoundError: 404,
+    ConflictError: 409,
+    AuthorizationError: 403,
+    BusinessRuleViolationError: 422,
+  };
+  
+  return Response.status(statusMap[error._tag]).json({
+    type: 'domain_error',
+    code: error.code,
+    message: error.message,
+  });
+}
+
+function toInfraErrorResponse(error: InfrastructureError): Response {
+  console.error('[InfrastructureError]', error.code, error.message, error.cause);
+  const status = error.retryable ? 503 : 500;
+  return Response.status(status).json({
+    type: 'infrastructure_error',
+    code: error.code,
+    message: 'サービスが一時的に利用できません',
+    retryable: error.retryable,
+  });
+}
+```
+
+### 11.14 新規プロジェクト vs 既存プロジェクト
+
+| プロジェクト | 推奨アプローチ |
+|-------------|---------------|
+| **新規** | Result 型を全面採用 |
+| **既存（例外ベース）** | 境界層で統一、段階的に移行 |
+
+#### 既存プロジェクトでの共存パターン
+
+```typescript
+// 既存コード（例外ベース）を Result でラップ
+async function legacyServiceCall(): Promise<Result<Data, DomainError>> {
+  try {
+    const data = await legacyService.getData(); // throws
+    return Result.ok(data);
+  } catch (e) {
+    if (e instanceof LegacyDomainError) {
+      return Result.err(toDomainError(e));
+    }
+    throw e; // InfrastructureError は再 throw
+  }
+}
+```
+
+#### 移行の優先順位
+
+1. **新規機能** → Result 型で実装
+2. **既存機能の修正** → 修正箇所のみ Result 型に
+3. **リファクタリング** → モジュール単位で移行
+
+#### 具体的な移行手順
+
+##### Step 1: 基盤を整備（1日目）
+
+```typescript
+// 1. result.ts を作成
+// src/result.ts
+type Result<T, E> = 
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+const Result = {
+  ok: <T>(value: T): Result<T, never> => ({ ok: true, value }),
+  err: <E>(error: E): Result<never, E> => ({ ok: false, error }),
+};
+
+export { Result };
+
+// 2. errors.ts を作成
+// src/errors.ts
+interface DomainErrorBase {
+  readonly _tag: string;
+  readonly code: string;
+  readonly message: string;
+}
+
+// 基底エラー型を定義...（Section 11.2 参照）
+```
+
+##### Step 2: 既存エラークラスをマッピング
+
+```typescript
+// 既存の例外クラス
+class RingiAmountExceededError extends Error {
+  constructor(readonly amount: number, readonly limit: number) {
+    super(`Amount ${amount} exceeds limit ${limit}`);
+  }
+}
+
+// 新しい判別共用体エラーへの変換関数
+function toDomainError(e: Error): DomainError {
+  if (e instanceof RingiAmountExceededError) {
+    return RingiErrors.amountExceeded(
+      RingiId.unknown(), // 既存コードに ID がない場合
+      Money.of(e.amount),
+      Money.of(e.limit)
+    );
+  }
+  // 他のエラー型も同様にマッピング
+  return DomainErrors.unknown(e.message);
+}
+```
+
+##### Step 3: 境界層にアダプターを追加
+
+```typescript
+// Controller で既存コードをラップ
+async function submitRingiHandler(req: Request): Promise<Response> {
+  // 新しいバリデーション（Result 型）
+  const validation = validateRingiInput(req.body);
+  if (!validation.ok) {
+    return toDomainErrorResponse(validation.error);
+  }
+  
+  // 既存コードをラップ
+  try {
+    const ringi = await legacyRingiService.submit(validation.value); // throws
+    return Response.created({ id: ringi.id });
+  } catch (e) {
+    if (e instanceof LegacyDomainError) {
+      return toDomainErrorResponse(toDomainError(e));
+    }
     throw e;
   }
 }
 ```
 
-#### エラーハンドリングミドルウェア（拡張版）
-
-HTTP ステータスコードの対応は Section 11.1 の表を参照。
+##### Step 4: モジュール単位で置換
 
 ```typescript
-const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
-  // DomainError: クライアントエラー（httpStatus は基底クラスで定義）
-  if (err instanceof DomainError) {
-    const status = 'httpStatus' in err ? (err as any).httpStatus : 409;
-    return res.status(status).json({
-      type: 'domain_error',
-      code: err.code,
-      message: err.message
-    });
-  }
-  
-  // InfrastructureError: サーバーエラー（リトライ戦略対応）
-  if (err instanceof InfrastructureError) {
-    console.error('[InfrastructureError]', err.code, err.message, err.cause);
-    const status = err.retryable ? 503 : 500;
-    const headers: Record<string, string> = {};
-    if (err.suggestedRetryAfterMs) {
-      headers['Retry-After'] = Math.ceil(err.suggestedRetryAfterMs / 1000).toString();
+// Before: 例外ベース
+class LegacyRingiService {
+  submit(data: RingiData): Ringi {
+    if (data.amount > MAX_AMOUNT) {
+      throw new RingiAmountExceededError(data.amount, MAX_AMOUNT);
     }
-    return res.status(status).set(headers).json({
-      type: 'infrastructure_error',
-      code: err.code,
-      message: 'サービスが一時的に利用できません',
-      retryable: err.retryable
-    });
+    // ...
   }
-  
-  // 予期しないエラー
-  console.error('[UnexpectedError]', err);
-  return res.status(500).json({
-    type: 'unexpected_error',
-    code: 'INTERNAL_ERROR',
-    message: 'サーバーエラーが発生しました'
-  });
-};
+}
+
+// After: Result 型
+class DraftRingi {
+  static create(id: RingiId, data: ValidatedRingiInput): Result<DraftRingi, RingiAmountExceededError> {
+    if (data.amount.isGreaterThan(Money.of(MAX_AMOUNT))) {
+      return Result.err(RingiErrors.amountExceeded(id, data.amount, Money.of(MAX_AMOUNT)));
+    }
+    return Result.ok(new DraftRingi(id, data));
+  }
+}
 ```
+
+##### Step 5: テストの移行
+
+```typescript
+// Before: 例外をテスト
+it('金額超過時に例外をスローする', () => {
+  expect(() => service.submit({ amount: 1000000 }))
+    .toThrow(RingiAmountExceededError);
+});
+
+// After: Result 型をテスト
+it('金額超過時にエラーを返す', () => {
+  const result = DraftRingi.create(id, { amount: Money.of(1000000) });
+  
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.error.code).toBe('RINGI_AMOUNT_EXCEEDED');
+  }
+});
+```
+
+#### 移行時の注意点
+
+| 注意点 | 対応 |
+|--------|------|
+| 既存の try-catch を壊さない | アダプター層で吸収 |
+| テストを先に書き換えない | 新旧両方のテストを維持 |
+| 一度に大きく変えない | 1 モジュール/1 PR |
+| 型の不整合 | `as unknown as` は禁止。変換関数を書く |
+
+#### 移行完了の判断基準
+
+- [ ] 全ての Controller が Result 型を返すドメインロジックを呼んでいる
+- [ ] 新しいドメインエラーは判別共用体で定義されている
+- [ ] InfrastructureError のみが `extends Error`
+- [ ] 既存の例外クラスは非推奨（deprecated）としてマーク
+- [ ] テストが Result 型の検証に移行している
 
 ---
 
@@ -2727,26 +3043,49 @@ const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
 
 | 本スキルのルール | NestJS での適用 |
 |-----------------|----------------|
-| Repository/Store をメソッド引数で受け取る | `@Injectable()` で DI を使用してよい |
+| Repository をメソッド引数で受け取る | `@Injectable()` で DI を使用してよい |
 | 完全コンストラクタ | DTO → Domain Object 変換時に適用 |
-| Resolver | NestJS の GraphQL Resolver とは別概念。混同注意 |
+| Result 型 | UseCase は Result を返し、Controller で HTTP 変換 |
 
 ```typescript
-// NestJS での許容パターン（正規例は Section 1.1 参照）
+// UseCase: Result 型を返す
 @Injectable()
 class SubmitRingiUseCase {
   constructor(
     private readonly repository: RingiRepository,
     private readonly clock: Clock
-  ) {} // DI 許容
+  ) {}
 
-  async execute(data: RingiData): Promise<SubmittedRingi> {
+  async execute(data: RingiData): Promise<Result<SubmittedRingi, DomainError>> {
     const validation = validateRingiInput(data);
     if (!validation.ok) {
-      throw new ValidationError(validation.errors);
+      return validation; // ValidationError を含む Result
     }
-    const draft = new DraftRingi(RingiId.generate(), validation.value);
-    return draft.submit(this.repository, this.clock);
+    
+    const draftResult = DraftRingi.create(RingiId.generate(), validation.value);
+    if (!draftResult.ok) {
+      return draftResult;
+    }
+    
+    return draftResult.value.submit(this.repository, this.clock);
+  }
+}
+
+// Controller: Result → HTTP 変換
+@Controller('ringis')
+class RingiController {
+  constructor(private readonly useCase: SubmitRingiUseCase) {}
+  
+  @Post()
+  async submit(@Body() data: RingiData): Promise<RingiResponse> {
+    const result = await this.useCase.execute(data);
+    if (!result.ok) {
+      throw new HttpException(
+        { code: result.error.code, message: result.error.message },
+        this.toHttpStatus(result.error._tag)
+      );
+    }
+    return { id: result.value.id.value };
   }
 }
 ```
@@ -2757,27 +3096,50 @@ class SubmitRingiUseCase {
 |-----------------|-----------------|
 | Command/Query 分類 | Server Actions = Command, RSC = ReadModel |
 | Repository | Server Actions 内で直接使用可 |
-| エラー処理 | Server Actions は例外を throw せず Result 型を返す |
+| エラー処理 | Server Actions は Result 型を返す |
 
 ```typescript
-// Server Action（正規例は Section 1.1 参照）
+// Server Action: Result 型を返す
 'use server'
 async function submitRingi(data: RingiData): Promise<ActionResult<SubmittedRingi>> {
+  // 1. バリデーション
   const validation = validateRingiInput(data);
   if (!validation.ok) {
-    return { ok: false, errors: validation.errors };
+    return { ok: false, error: validation.error };
   }
   
-  try {
-    const draft = new DraftRingi(RingiId.generate(), validation.value);
-    const ringi = await draft.submit(repository, systemClock);
-    return { ok: true, data: ringi };
-  } catch (e) {
-    if (e instanceof DomainError) {
-      return { ok: false, error: { code: e.code, message: e.message } };
-    }
-    throw e; // InfrastructureError は上位で処理
+  // 2. ドメインロジック（Result 型）
+  const draftResult = DraftRingi.create(RingiId.generate(), validation.value);
+  if (!draftResult.ok) {
+    return { ok: false, error: { code: draftResult.error.code, message: draftResult.error.message } };
   }
+  
+  // 3. Command 実行（InfrastructureError は例外）
+  try {
+    const submitResult = await draftResult.value.submit(repository, systemClock);
+    if (!submitResult.ok) {
+      return { ok: false, error: { code: submitResult.error.code, message: submitResult.error.message } };
+    }
+    return { ok: true, data: submitResult.value };
+  } catch (e) {
+    // InfrastructureError は error.tsx で処理
+    throw e;
+  }
+}
+
+// クライアントでの使用
+'use client'
+function RingiForm() {
+  const [state, formAction] = useActionState(submitRingi, null);
+  
+  return (
+    <form action={formAction}>
+      {state && !state.ok && (
+        <div role="alert">{state.error.message}</div>
+      )}
+      {/* ... */}
+    </form>
+  );
 }
 ```
 
@@ -2880,9 +3242,10 @@ class ConfirmOrder {
 - [ ] **エラー**: `{Entity}{原因}Error`（Exception禁止）
 
 ### エラー処理（Section 11）
-- [ ] **階層**: DomainError / InfrastructureError のいずれかを継承
-- [ ] **code**: 全エラーに一意の code プロパティあり
-- [ ] **バリデーション**: 入力検証は Result型、ビジネスルール違反は例外
+- [ ] **DomainError**: 判別共用体（`_tag`, `code`, `message`）で定義されているか
+- [ ] **Result型**: ドメインロジックは `Result<T, E>` を返しているか
+- [ ] **InfrastructureError**: 外部ライブラリのエラーは `extends Error` で例外か
+- [ ] **境界層**: InfrastructureError を catch して Result に変換しているか
 
 ### ディレクトリ（Section 10）
 - [ ] **機能ベース**: 技術層ではなく機能でディレクトリを分けているか
