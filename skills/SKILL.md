@@ -95,11 +95,11 @@ func (t TaxOn) Amount() Money {
 
 ## 大原則
 
-1. **MECE分類に従え**: すべてのクラスは Command / Query / ReadModel のいずれかに分類せよ
+1. **4分類に従え**: すべてのクラスは **Command / Transition / Query / ReadModel** のいずれかに分類せよ
 2. **完全コンストラクタ**: オブジェクトは生成時点で完全に有効な状態にせよ
 3. **ポリモーフィズム**: 複数ロジックは Interface + 実装クラスで表現せよ（enum + switch 禁止）
 4. **イミュータブル優先**: 状態変更は最小限に、変更時は新しいオブジェクトを返す
-5. **本スキルのルールを優先**: FWが構文レベルで強制する場合のみ例外を許容
+5. **本スキルのルールを優先**: Fレームワークが構文レベルで強制する場合のみ例外を許容
 
 ### イミュータビリティの実現
 
@@ -160,24 +160,37 @@ class Ringi {
 }
 ```
 
-## 1. クラス分類: Command / Query / ReadModel
+## 1. クラス分類: Command / Transition / Query / ReadModel
 
-すべてのクラスは以下の3つに分類される。
+すべてのクラスは以下の4つに**排他的に**分類される。
 
-| 分類 | 定義 | 副作用 | 外部リソース |
-|------|------|:------:|:------:|
-| **Command** | 永続状態を変更する、または外部システムに作用する | あり | メソッド引数 |
-| **Query** | 入力から出力を導出する（純粋計算） | なし | なし |
-| **ReadModel** | 永続層から読み取り専用でデータを取得する | なし | メソッド引数 |
+| 分類 | 定義 | 副作用 | 外部リソース | 主な用途 |
+|------|------|:------:|:------:|---------|
+| **Command** | 永続状態を変更する、または外部システムに作用する | あり | メソッド引数 | 状態変更の実行 |
+| **Transition** | 型 A → 型 B への変換（純粋関数） | なし | なし | バリデーション、パース |
+| **Query** | 値の計算・導出（純粋関数） | なし | なし | 税計算、判定 |
+| **ReadModel** | 永続層から読み取り専用でデータを取得 | なし | メソッド引数 | 一覧取得、検索 |
 
-**なぜ3分類か:**
-- Query は純粋計算（外部リソースなし）に限定することでテスト容易性を保証
-- ReadModel は「読み取りのみ」という制約で Command と区別
-- CQRS パターンとの整合性を持つ
+**4分類の判断フロー:**
+
+```
+このクラスは...
+├─ 永続化/外部通信を行う？
+│   ├─ YES + 書き込み → Command
+│   └─ YES + 読み取りのみ → ReadModel
+│
+└─ NO（純粋関数）
+    ├─ 入力型と出力型が異なる？ → Transition
+    └─ 同じ概念の別表現？ → Query
+```
+
+**Transition と Query の違い:**
+- **Transition**: `UnvalidatedData` → `ValidatedData`（型が変わる）
+- **Query**: `Money` → `number`（同じ「金額」の別表現）
 
 ### 1.1 Command（命令実行）
 
-永続状態を変更する、または外部システムに作用するクラス。
+永続状態を変更する、または外部システムに作用するクラス。**必ず副作用を伴う。**
 
 #### Pending Object Pattern
 
@@ -187,25 +200,37 @@ class Ringi {
 {状態}{Entity}(入力データ).{遷移}(依存) → {結果Entity}
 ```
 
-#### Command の2種類
+**State vs Identity:** Pending Object Pattern は新しいオブジェクトを生成する。同一性（Identity）は維持しない。`起案中稟議` と `申請済稟議` は別のオブジェクトである。
 
-| 種類 | 定義 | 依存 | 例 |
-|------|------|------|-----|
-| **Effectful Command** | 永続化・外部通信を伴う | Store/Transport | `起案中稟議.submit(store)` |
-| **Pure Transition** | 状態遷移のみ、副作用なし | Rules等 | `未検証経費.validate(rules)` |
+#### Identity の伝播
 
-**注意:** Pure Transition は副作用がないが、「状態遷移を型で表現する」という観点から Command に分類する。Query（計算）とは異なり、オブジェクトの「状態」を変換する意図を持つ。
+状態遷移で Identity を維持するには、ID を明示的に引き継ぐ（正規例は Section 1.1「実装例」参照）:
 
-**State vs Identity:** Pending Object Pattern は新しいオブジェクトを生成する。同一性（Identity）は維持しない。`起案中稟議` と `申請済稟議` は別のオブジェクトである。ID で紐づけたい場合は、生成されたオブジェクトに同じ ID を持たせる。
+```typescript
+// ID の引き継ぎのポイント
+class DraftRingi {
+  constructor(readonly id: RingiId, ...) {}  // ← ID は最初から持つ
 
-| 操作 | 種類 | クラス名パターン | メソッド | 例 |
-|------|------|-----------------|---------|-----|
-| 作成 | Effectful | `Draft{Entity}` / `Pending{Entity}` | `submit(store)` | `DraftRingi(data).submit(store)` |
-| 承認 | Effectful | `Awaiting{Entity}` | `approve(store)` | `AwaitingApproval(ringi).approve(store)` |
-| 変更 | Effectful | `{Entity}Change` | `apply(store)` | `ExpenseChange(current, diff).apply(store)` |
-| 取消 | Effectful | `{Entity}Cancellation` | `execute(store)` | `InvoiceCancellation(target).execute(store)` |
-| 検証 | Pure | `Unvalidated{Entity}` | `validate(rules)` | `UnvalidatedExpense(data).validate(rules)` |
-| 送信 | Effectful | `Outgoing{Resource}` | `deliver(transport)` | `OutgoingNotification(to, message).deliver(slack)` |
+  async submit(...): Promise<SubmittedRingi> {
+    return new SubmittedRingi(this.id, ...);  // ← 同じ ID を引き継ぐ
+  }
+}
+```
+
+**ルール:**
+1. ID は最初の状態（Draft）で生成し、全状態で引き継ぐ
+2. 古いオブジェクトへの参照は使用しない
+3. イベントソーシングを使う場合、各状態遷移をイベントとして記録
+
+| 操作 | クラス名パターン | メソッド | 例 |
+|------|-----------------|---------|-----|
+| 作成 | `Draft{Entity}` / `Pending{Entity}` | `submit(store)` | `DraftRingi(data).submit(store)` |
+| 承認 | `Awaiting{Entity}` | `approve(store)` | `AwaitingApproval(ringi).approve(store)` |
+| 変更 | `{Entity}Change` | `apply(store)` | `ExpenseChange(current, diff).apply(store)` |
+| 取消 | `{Entity}Cancellation` | `execute(store)` | `InvoiceCancellation(target).execute(store)` |
+| 送信 | `Outgoing{Resource}` | `deliver(transport)` | `OutgoingNotification(to, message).deliver(slack)` |
+
+**注意:** 検証（バリデーション）は Transition（1.1.1節）として分類。Command は必ず外部リソースへの副作用を伴う。
 
 #### 状態名の選択
 
@@ -230,25 +255,41 @@ class Ringi {
 | `Unvalidated` | 未検証 | バリデーション前のデータ |
 | `Outgoing` | 送信予定 | 外部への送信前 |
 
-#### 実装例
+#### 実装例（正規例）
+
+以下が DraftRingi の正規実装。他のセクションの DraftRingi 例はこれを簡略化したもの。
 
 ```typescript
-// 稟議: Draft → submit → Submitted
+// 稟議: Draft → submit → Submitted（正規例）
 class DraftRingi {
-  constructor(private readonly data: RingiData) {
-    if (!data.title) throw new Error("件名は必須です");
-    if (!data.amount) throw new Error("金額は必須です");
+  constructor(
+    readonly id: RingiId,                        // Identity は最初から持つ
+    private readonly data: ValidatedRingiInput   // 検証済みデータのみ受け取る
+  ) {
+    // ドメイン不変条件のみチェック（入力形式は検証済み前提）
+    if (data.amount.isGreaterThan(Money.of(100_000_000))) {
+      throw new RingiAmountExceededError(data.amount);
+    }
   }
 
-  async submit(store: RingiStore): Promise<SubmittedRingi> {
-    const ringi = SubmittedRingi.fromDraft(this.data);
-    await store.save(ringi);
-    return ringi;
+  async submit(store: RingiRepository, clock: Clock): Promise<SubmittedRingi> {
+    const submitted = new SubmittedRingi(
+      this.id,           // 同じ ID を引き継ぐ
+      this.data,
+      clock.now()
+    );
+    await store.save(submitted);
+    return submitted;
   }
 }
 
-// 使用
-const submitted = await new DraftRingi(data).submit(ringiStore);
+// 使用（境界層）
+const validation = validateRingiInput(req.body);
+if (!validation.ok) {
+  return Response.badRequest({ errors: validation.errors });
+}
+const draft = new DraftRingi(RingiId.generate(), validation.value);
+const submitted = await draft.submit(ringiRepository, systemClock);
 ```
 
 ```typescript
@@ -259,19 +300,147 @@ class ExpenseReportChange {
     private readonly newItems: ExpenseItem[]
   ) {}
 
-  async apply(store: ExpenseReportStore): Promise<ExpenseReport> {
+  async apply(repository: ExpenseReportRepository): Promise<ExpenseReport> {
     const updated = this.current.withItems(this.newItems);
-    await store.save(updated);
+    await repository.save(updated);
     return updated;
   }
 }
 
 // 使用
-const updated = await new ExpenseReportChange(report, newItems).apply(store);
+const updated = await new ExpenseReportChange(report, newItems).apply(repository);
 ```
 
+#### 永続化の命名規則
+
+| パターン | 使用する名前 | 非推奨 |
+|---------|-------------|--------|
+| 永続化 | `{Entity}Repository` | `{Entity}Store`, `{Entity}Dao` |
+| 外部通信 | `{Service}Gateway` | `{Service}Client`, `{Service}Transport` |
+
+**Repository を使用する理由:**
+- DDD の確立されたパターン名
+- フレームワーク（Spring Data Repository 等）との整合性が高い
+- 「Store」は Redux 等の状態管理と混同しやすい
+
 ```typescript
-// 検証: Unvalidated → validate → Validated (Pure Transition)
+// ✅ 推奨
+interface RingiRepository {
+  save(ringi: Ringi): Promise<void>;
+  findById(id: RingiId): Promise<Ringi | null>;
+}
+
+// ❌ 非推奨（既存コードベースでのみ許容）
+interface RingiStore { ... }
+```
+
+**レガシーコードベースでの移行:**
+既存コードが `Store` を使用している場合、新規コードでも `Store` を継続してよい。ただし、大規模リファクタリング時に `Repository` への統一を検討せよ。
+
+#### Repository 設計指針
+
+Repository は Interface で定義し、最小限のメソッドに絞れ。
+
+```typescript
+// Repository Interface
+interface RingiRepository {
+  save(ringi: Ringi): Promise<void>;
+  findById(id: RingiId): Promise<Ringi | null>;
+}
+
+// 実装（技術詳細を隠蔽）
+class PostgresRingiRepository implements RingiRepository {
+  constructor(private readonly conn: DatabaseConnection) {}
+
+  async save(ringi: Ringi): Promise<void> {
+    await this.conn.execute(/* ... */);
+  }
+
+  async findById(id: RingiId): Promise<Ringi | null> {
+    const row = await this.conn.queryOne(/* ... */);
+    return row ? Ringi.fromRow(row) : null;
+  }
+}
+```
+
+**Repository 設計の原則:**
+
+| 原則 | 説明 |
+|------|------|
+| Interface で定義 | テスト時に InMemory 実装に差し替え可能にする |
+| Aggregate Root 単位 | 1 Repository = 1 Aggregate Root（下記参照） |
+| 単一キー検索に絞る | 複雑なクエリは ReadModel に分離 |
+| ドメインオブジェクトを返す | 生のデータ（Row, Record）を返さない |
+
+#### Repository に許容するメソッド
+
+| メソッド | 許容 | 理由 |
+|---------|:----:|------|
+| `save(entity)` | ✅ | 永続化の基本操作 |
+| `findById(id)` | ✅ | 単一キーでの取得 |
+| `findByNaturalKey(key)` | ✅ | 自然キー（社員番号等）での取得 |
+| `delete(id)` | ✅ | 削除の基本操作 |
+| `findByStatus(status)` | ⚠️ | 件数が少なければ許容 |
+| `findByCustomerAndDateRange(...)` | ❌ | ReadModel に分離 |
+| `searchByKeyword(keyword)` | ❌ | ReadModel に分離 |
+
+**判断基準:** 検索条件が2つ以上、または結果が複数件になる可能性が高い場合は ReadModel に分離。
+
+#### Aggregate Root と Repository の関係
+
+```
+Aggregate Root = 整合性の境界を持つエンティティの集合のルート
+
+稟議 Aggregate:
+┌─────────────────────────────┐
+│ Ringi (Aggregate Root)      │  ← RingiRepository で永続化
+│   ├── ApprovalStep[]        │  ← Ringi と一緒に保存
+│   └── Attachment[]          │  ← Ringi と一緒に保存
+└─────────────────────────────┘
+
+経費精算 Aggregate:
+┌─────────────────────────────────┐
+│ ExpenseReport (Aggregate Root)  │  ← ExpenseReportRepository で永続化
+│   └── ExpenseItem[]             │  ← ExpenseReport と一緒に保存
+└─────────────────────────────────┘
+```
+
+**ルール:**
+- Repository は Aggregate Root に対してのみ作成
+- 子エンティティ（ApprovalStep, ExpenseItem）は親と一緒に保存
+- 子エンティティ単体の Repository は作らない
+
+### 1.1.1 Transition（状態遷移）
+
+状態遷移を型で表現するクラス。**副作用なし、純粋関数。**
+
+CQS の定義上は Query に分類されるが、「状態の変換」という意図を明示するため別カテゴリとして扱う。
+
+#### Query との違い
+
+| 観点 | Transition | Query |
+|------|-----------|-------|
+| 意図 | 状態 A → 状態 B への変換 | 値の計算・導出 |
+| 入出力 | 型が変わる（UnvalidatedExpense → ValidatedExpense） | 同じ概念の別表現（Money → string） |
+| 命名 | `Unvalidated{Entity}`, `Raw{Entity}` | `{計算内容}` |
+| メソッド | `validate()`, `parse()`, `normalize()` | `amount()`, `count()`, `ok()` |
+
+#### パターン
+
+```
+{状態}{Entity}(入力データ).{遷移}(依存) → {変換後Entity}
+```
+
+| 操作 | クラス名パターン | メソッド | 例 |
+|------|-----------------|---------|-----|
+| 検証 | `Unvalidated{Entity}` | `validate(rules)` | `UnvalidatedExpense(data).validate(rules)` |
+| パース | `Raw{Entity}` | `parse()` | `RawCsvRow(line).parse()` |
+| 正規化 | `Denormalized{Entity}` | `normalize()` | `DenormalizedAddress(input).normalize()` |
+
+#### 実装例
+
+```typescript
+// 検証: Unvalidated → validate → Validated
 class UnvalidatedExpense {
   constructor(private readonly data: ExpenseData) {}
 
@@ -288,88 +457,26 @@ class UnvalidatedExpense {
 const validated = new UnvalidatedExpense(data).validate(companyRules);
 ```
 
-#### Store 命名規則
-
-「Repository」は技術用語。ドメイン寄りの命名を使え:
-
-| 技術用語 | 推奨 | 例 |
-|---------|------|-----|
-| `Repository` | `Store` | `RingiStore`, `ExpenseStore` |
-| `Gateway` | `Transport` / `Channel` | `SlackTransport`, `EmailChannel` |
-| `Client` | `Connection` | `ApiConnection` |
-
-#### Store 設計指針
-
-Store は Interface で定義し、最小限のメソッドに絞れ。
-
 ```typescript
-// Store Interface
-interface RingiStore {
-  save(ringi: Ringi): Promise<void>;
-  findById(id: RingiId): Promise<Ringi | null>;
-}
+// パース: RawCsvRow → parse → ParsedTransaction
+class RawCsvRow {
+  constructor(private readonly line: string) {}
 
-// 実装（技術詳細を隠蔽）
-class PostgresRingiStore implements RingiStore {
-  constructor(private readonly conn: DatabaseConnection) {}
-
-  async save(ringi: Ringi): Promise<void> {
-    await this.conn.execute(/* ... */);
-  }
-
-  async findById(id: RingiId): Promise<Ringi | null> {
-    const row = await this.conn.queryOne(/* ... */);
-    return row ? Ringi.fromRow(row) : null;
+  parse(): ParsedTransaction {
+    const [date, amount, description] = this.line.split(',');
+    return new ParsedTransaction(
+      LocalDate.parse(date),
+      Money.of(Number(amount)),
+      description.trim()
+    );
   }
 }
+
+// 使用
+const transaction = new RawCsvRow("2025-01-25,10000,交通費").parse();
 ```
 
-**Store 設計の原則:**
-
-| 原則 | 説明 |
-|------|------|
-| Interface で定義 | テスト時に InMemory 実装に差し替え可能にする |
-| Aggregate Root 単位 | 1 Store = 1 Aggregate Root（下記参照） |
-| 単一キー検索に絞る | 複雑なクエリは ReadModel に分離 |
-| ドメインオブジェクトを返す | 生のデータ（Row, Record）を返さない |
-
-#### Store に許容するメソッド
-
-| メソッド | 許容 | 理由 |
-|---------|:----:|------|
-| `save(entity)` | ✅ | 永続化の基本操作 |
-| `findById(id)` | ✅ | 単一キーでの取得 |
-| `findByNaturalKey(key)` | ✅ | 自然キー（社員番号等）での取得 |
-| `delete(id)` | ✅ | 削除の基本操作 |
-| `findByStatus(status)` | ⚠️ | 件数が少なければ許容 |
-| `findByCustomerAndDateRange(...)` | ❌ | ReadModel に分離 |
-| `searchByKeyword(keyword)` | ❌ | ReadModel に分離 |
-
-**判断基準:** 検索条件が2つ以上、または結果が複数件になる可能性が高い場合は ReadModel に分離。
-
-#### Aggregate Root と Store の関係
-
-```
-Aggregate Root = 整合性の境界を持つエンティティの集合のルート
-
-稟議 Aggregate:
-┌─────────────────────────────┐
-│ Ringi (Aggregate Root)      │  ← RingiStore で永続化
-│   ├── ApprovalStep[]        │  ← Ringi と一緒に保存
-│   └── Attachment[]          │  ← Ringi と一緒に保存
-└─────────────────────────────┘
-
-経費精算 Aggregate:
-┌─────────────────────────────┐
-│ ExpenseReport (Aggregate Root) │  ← ExpenseReportStore で永続化
-│   └── ExpenseItem[]            │  ← ExpenseReport と一緒に保存
-└─────────────────────────────┘
-```
-
-**ルール:**
-- Store は Aggregate Root に対してのみ作成
-- 子エンティティ（ApprovalStep, ExpenseItem）は親と一緒に保存
-- 子エンティティ単体の Store は作らない
+**注意:** Transition は副作用がないため、テストが容易。モック不要で単体テスト可能。
 
 ### 1.2 Query（問い合わせ）
 
@@ -699,7 +806,25 @@ class UrgentApprovalRoute implements ApprovalRouteStrategy {
 
 ### 1.5 Resolver（解決クラス）
 
-Resolver は **Query の一種** として、条件に基づいて Strategy や実装を選択する。
+Resolver は **Factory パターンの一種** として、条件に基づいて Strategy や実装を選択する。
+
+**注意:** Resolver は Command / Transition / Query / ReadModel の4分類には属さない。境界層専用のユーティリティパターンである。
+
+#### Resolver の位置づけ
+
+| 観点 | 説明 |
+|------|------|
+| **分類** | Factory（4分類外、境界層専用） |
+| **配置** | **境界層**（Controller, UseCase, Handler から呼び出す） |
+| **役割** | 条件に基づいて適切な Strategy/実装を選択 |
+| **副作用** | なし（インスタンス生成のみ） |
+
+**Query との違い:**
+- Query: 値を計算して返す（`amount()`, `count()`）
+- Resolver: オブジェクトを生成して返す（`resolve()` → Strategy インスタンス）
+
+**switch の許容:**
+Resolver 内の `switch` は「実装の選択」であり、ビジネスロジックの分岐ではない。ただし、switch 内でビジネスロジックを書いてはならない。
 
 ```typescript
 // 承認ルート Resolver: 稟議の属性に基づいてルートを選択
@@ -747,39 +872,31 @@ class ExpenseRuleResolver {
 }
 ```
 
-**Resolver の位置づけ:**
-- **分類**: Query（副作用なし）
+**Resolver のルール:**
 - **メソッド名**: `resolve()`
-- **役割**: 条件に基づいて適切な実装を選択
-- **配置**: 境界層（Controller や UseCase から呼び出す）
+- **戻り値**: Strategy や Policy などの Interface 実装
+- **switch の許容**: 実装選択の switch は許容。ただし分岐内でビジネスロジックを書かない
+- **配置**: 境界層のみ。ドメイン層に Resolver を置かない
 
 ### 1.6 境界層での条件分岐（許容）
 
-#### 境界層とは
+#### 境界層の定義
 
 境界層は「外部世界とドメインロジックの接点」である。
 
+| 層 | 役割 | ファイル名パターン |
+|---|------|-------------------|
+| **境界層** | 外部世界との接点 | `*Controller.ts`, `*Handler.ts`, `*Mapper.ts`, `*RepositoryImpl.ts`, `*Gateway.ts`, `*Resolver.ts` |
+| **ドメイン層** | ビジネスロジック | `Draft*.ts`, `*Tax.ts`, `Money.ts`, `*Repository.ts`（Interface） |
+
+**判断フロー:**
+
 ```
-┌─────────────────────────────────────────────────────┐
-│                    外部世界                          │
-│  (HTTP, CLI, Queue, External API, Database)         │
-└─────────────────────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────┐
-│                    境界層                            │
-│  - Controller / Handler                             │
-│  - Resolver (Strategy選択)                          │
-│  - Mapper (外部形式 ↔ ドメイン型)                    │
-│  - Store実装 (Row → Entity変換)                     │
-└─────────────────────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────┐
-│                 ドメインロジック                      │
-│  - Command / Query / ReadModel                      │
-│  - Entity / Value Object                            │
-└─────────────────────────────────────────────────────┘
+このクラスは...
+├─ HTTP/CLI/Queue を直接扱う？ → 境界層
+├─ DB/外部API と直接通信する？ → 境界層
+├─ JSON/Row など外部形式を扱う？ → 境界層
+└─ 上記すべて NO → ドメイン層
 ```
 
 #### 境界層で許容される条件分岐
@@ -818,16 +935,36 @@ class RingiProcessor {
 
 **ルール:** 境界層の分岐内では「変換」のみ行い、ビジネスロジックを書かない。
 
-### 1.7 enum の使用ルール
+### 1.7 enum と switch の使用ルール
 
-enum 自体は使用可能。ただし enum を switch/match で分岐してロジックを実行するのは禁止。
+#### switch 許容/禁止の判断基準
 
-| enum の使い方 | 可否 | 例 |
-|--------------|:----:|-----|
+| 場所 | switch 内の処理 | 可否 | 例 |
+|------|---------------|:----:|-----|
+| **境界層** | インスタンス生成（`return new XxxRule()`） | ✅ | Resolver |
+| **境界層** | 値の変換（`return Status.ACTIVE`） | ✅ | Mapper |
+| **ドメイン層** | 計算/判定ロジック | ❌ | 禁止 |
+| **どこでも** | 2行以上のビジネスロジック | ❌ | 禁止 |
+
+**判断フロー:**
+
+```
+switch を書こうとしている...
+├─ 境界層のファイルか？
+│   ├─ YES → 各 case は「インスタンス生成」または「値の変換」のみか？
+│   │   ├─ YES → ✅ 許容
+│   │   └─ NO → ❌ 禁止（ビジネスロジックを含む）
+│   └─ NO → ❌ 禁止（ドメイン層での switch）
+```
+
+#### enum の使い方
+
+| 使い方 | 可否 | 例 |
+|--------|:----:|-----|
 | 状態の識別子 | ✅ | `OrderStatus.CONFIRMED` |
-| 単一条件での比較 | ✅ | `if status == OrderStatus.CONFIRMED` |
-| Resolver 内での分岐 | ✅ | 境界層での Strategy 選択 |
-| switch/match + ロジック | ❌ | 分岐内でビジネスロジック実行 |
+| 単一条件での比較 | ✅ | `if (status === OrderStatus.CONFIRMED)` |
+| 境界層での switch | ✅ | Resolver, Mapper |
+| ドメイン層での switch | ❌ | Polymorphism を使え |
 
 ```typescript
 // ✅ OK: enum を識別子として使用
@@ -876,39 +1013,152 @@ class ApproveRingiAction implements RingiAction {
 | 状況 | 緩和 |
 |------|------|
 | プロトタイプ/PoC | 本スキル無視でOK。動くことを優先 |
-| 分岐が2つだけ | Polymorphism 不要。if/else で十分 |
+| 分岐が2つだけで値の選択のみ | Polymorphism 不要。if/else で十分 |
 | 分岐が将来増える見込みなし | Polymorphism 不要 |
 | 1回しか使わない計算 | Query クラス化不要。インラインでOK |
 | チーム全員が理解できない | 段階的に導入。一度に全部やらない |
 
-**判断基準:** 「このクラスを作ることで、コードの変更が本当に楽になるか？」
+#### Polymorphism の判断基準（統合版）
+
+**このセクションが Polymorphism 判断の唯一の基準である。**
+
+##### 判断フロー（この順序で評価せよ）
+
+```
+この分岐は...
+
+1. 各分岐で異なる計算ロジックを持つか？
+   └─ YES → Polymorphism
+   └─ NO → 次へ
+
+2. 各分岐に独立したテストケースが必要か？
+   （「この分岐にテストを書くなら、別々のテストケースになるか？」）
+   └─ YES → Polymorphism
+   └─ NO → 次へ
+
+3. 分岐が将来増える可能性が高いか？
+   （現時点で3つ目のケースが想定できるか？）
+   └─ YES → Polymorphism
+   └─ NO → 次へ
+
+4. 上記すべて NO → if/else または三項演算子
+```
+
+##### 具体的な判断表
+
+| ケース | 判断 | 理由 |
+|--------|:----:|------|
+| 定数を返すだけ（`isGold ? 0.2 : 0.1`） | if/else | 計算ロジックなし |
+| 会員種別ごとに割引計算式が異なる | Polymorphism | 異なる計算ロジック |
+| 状態によってバリデーションルールが異なる | Polymorphism | 独立したテストが必要 |
+| 国によって税率が異なる（今後増える可能性あり） | Polymorphism | 将来の拡張性 |
+| 真偽値で2択を選ぶだけ | if/else | 単純な値の選択 |
+
+##### コード例
 
 ```typescript
-// ✅ 2分岐なら if/else で十分
+// ✅ if/else で十分: 値の選択のみ（計算ロジックなし）
 const discount = member.isGold ? 0.2 : 0.1;
 
-// ❌ 過剰: 2分岐のために4クラス作成
-interface DiscountStrategy { ... }
-class GoldDiscount implements DiscountStrategy { ... }
-class StandardDiscount implements DiscountStrategy { ... }
-class DiscountResolver { ... }
+// ✅ if/else で十分: 対称的な値の返却
+discountRate(): number {
+  return this.member.isGold() ? 0.2 : 0.1;
+}
+
+// ✅ Polymorphism: 各分岐で異なる計算ロジック
+interface MemberDiscount {
+  calculate(order: Order): Money;
+}
+
+class GoldMemberDiscount implements MemberDiscount {
+  calculate(order: Order): Money {
+    // ゴールド会員: 基本10% + 購入額に応じた追加割引
+    const base = order.subtotal.multiply(0.1);
+    const bonus = order.subtotal.isGreaterThan(Money.of(10000)) 
+      ? order.subtotal.multiply(0.05) 
+      : Money.ZERO;
+    return base.add(bonus);
+  }
+}
+
+class StandardMemberDiscount implements MemberDiscount {
+  calculate(order: Order): Money {
+    // 一般会員: 一律5%
+    return order.subtotal.multiply(0.05);
+  }
+}
+
+// ❌ 過剰: 値を返すだけなのにクラス化
+interface DiscountRate { rate(): number; }
+class GoldRate implements DiscountRate { rate() { return 0.2; } }
+class StandardRate implements DiscountRate { rate() { return 0.1; } }
 ```
 
-**拡張ポイント:** 3つ目の分岐が必要になった時点でリファクタリングせよ。
+**対称パス else との関係:** 値の選択のみなら if/else で十分。各分岐で異なる計算ロジックがある場合のみ Polymorphism を使う。
 
-#### ドットチェーンは1つまで
+#### Pending Object Pattern のスケーラビリティ
+
+状態数が多い場合、Pending Object Pattern はクラス爆発を招く:
+
+| 状態数 | 推奨アプローチ |
+|--------|---------------|
+| 2-4 | Pending Object Pattern |
+| 5-7 | Pending Object Pattern または State パターン |
+| 8+ | State パターン、または状態機械ライブラリ |
+
+**State パターンとの比較:**
+
+| 観点 | Pending Object Pattern | State パターン |
+|------|----------------------|---------------|
+| 型安全性 | 高（不正な遷移がコンパイルエラー） | 中（ランタイムチェック） |
+| クラス数 | 状態数 × 1 | 1 + 状態数 |
+| 柔軟性 | 低（遷移の追加が大変） | 高（State クラスの追加のみ） |
+| 推奨場面 | 状態が少なく、型安全性を重視 | 状態が多く、柔軟性を重視 |
+
+#### ドットチェーンのルール
+
+**禁止の意図:** 「他のオブジェクトの内部構造を知りすぎている」ことを防ぐ（デメテルの法則）。
+
+| パターン | 可否 | 理由 |
+|---------|:----:|------|
+| `this.ringi.applicant.department.name` | ❌ | プロパティの深いアクセス |
+| `builder.withTitle("x").withAmount(100).build()` | ✅ | Fluent API / Builder パターン |
+| `array.filter(...).map(...).reduce(...)` | ✅ | 関数型チェーン |
+| `this.ringi?.applicant?.name` | ✅ | Optional chaining（null 安全） |
 
 ```typescript
-// ❌ Bad: ドット2つ以上
+// ❌ Bad: プロパティの深いアクセス
 this.ringi.applicant.department.name
 
-// ✅ Good: ドット1つまで
+// ✅ Good: メソッドで隠蔽
 this.ringi.applicantDepartmentName()
+
+// ✅ OK: Fluent API
+const ringi = RingiBuilder.create()
+  .withTitle("備品購入")
+  .withAmount(Money.of(50000))
+  .build();
+
+// ✅ OK: 関数型チェーン
+const total = items
+  .filter(item => item.isApproved)
+  .map(item => item.amount)
+  .reduce((sum, amount) => sum.add(amount), Money.ZERO);
 ```
 
-#### 行数目安: 10行以内
+#### 行数の目安
 
-Command/Query の分類に従えば自然と短くなる。10行を超えたら分割を検討せよ。
+**目安:** 10行以内を目指すが、以下の場合は超過を許容:
+
+| 許容ケース | 理由 |
+|-----------|------|
+| 複数のガード節（Early Return）がある | 安全性のため |
+| 完全コンストラクタのバリデーションが多い | 不変条件の保証 |
+| 分割すると逆に可読性が下がる | 実用性優先 |
+
+**真の基準:** 「このメソッドは**1つのこと**だけをしているか？」
+
+Command/Query/Transition の分類に従えば自然と短くなる。行数より「単一責任」を重視せよ。
 
 #### 行数 vs 引数のトレードオフ
 
@@ -917,20 +1167,20 @@ Command/Query の分類に従えば自然と短くなる。10行を超えたら�
 | **引数を減らす** > 行数を減らす | 引数が多いとテストが困難になる |
 
 ```typescript
-// ❌ Bad: 引数5つで行数は少ない
-async function submitRingi(
-  title: string,
-  amount: number,
-  reason: string,
-  attachments: File[],
-  urgent: boolean
-): Promise<Ringi> {
-  return new DraftRingi({ title, amount, reason, attachments, urgent }).submit(store);
+// ❌ Bad: 引数が多い（引数 vs 行数のトレードオフの例）
+function createReservation(
+  customerId: string,
+  date: Date,
+  time: string,
+  partySize: number,
+  notes: string
+): Reservation {
+  return new Reservation({ customerId, date, time, partySize, notes });
 }
 
-// ✅ Good: 引数1つで行数は少し増えるが、テストしやすい
-async function submitRingi(data: RingiData): Promise<Ringi> {
-  return new DraftRingi(data).submit(store);
+// ✅ Good: Parameter Object で引数を1つに（正規例は Section 1.1 参照）
+function createReservation(data: ReservationData): Reservation {
+  return new Reservation(data);
 }
 ```
 
@@ -942,28 +1192,79 @@ async function submitRingi(data: RingiData): Promise<Ringi> {
 
 ```typescript
 // ❌ Bad: 不完全な状態を許容
-class DraftRingi {
-  constructor(private readonly data: RingiData | null) {
+class Order {
+  constructor(private readonly data: OrderData | null) {
     // data が null かもしれない
   }
 }
 
 // ✅ Good: 完全コンストラクタ
-class DraftRingi {
-  constructor(private readonly data: RingiData) {
-    if (!data) {
-      throw new Error("稟議データは必須です");
-    }
-    if (!data.title) {
-      throw new Error("件名は必須です");
-    }
-    if (data.amount.isNegative()) {
-      throw new Error("金額は0以上である必要があります");
-    }
-    // data は常に有効
+class Order {
+  constructor(private readonly data: OrderData) {
+    if (!data) throw new Error("注文データは必須です");
+    if (!data.customerId) throw new Error("顧客IDは必須です");
+    if (data.items.length === 0) throw new Error("商品は1つ以上必要です");
   }
 }
 ```
+
+**稟議の正規例:** Section 1.1「実装例（正規例）」の DraftRingi を参照。
+
+### 2.1.1 入力バリデーションと完全コンストラクタの関係
+
+**2フェーズアプローチ:** ユーザー入力の検証と、ドメインオブジェクトの不変条件保証は分離せよ。
+
+| フェーズ | 目的 | エラー処理 | 実行場所 |
+|---------|------|-----------|---------|
+| **入力バリデーション** | ユーザー入力の形式・値チェック | Result型で複数エラー集約 | 境界層（Controller等） |
+| **完全コンストラクタ** | ドメイン不変条件の保証 | 即座に例外（単一） | ドメイン層 |
+
+#### フロー図
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 境界層（Controller / Handler）                               │
+│                                                             │
+│   rawInput ─→ validateRingiInput(rawInput)                  │
+│                    │                                        │
+│                    ▼                                        │
+│              ValidationResult                               │
+│                    │                                        │
+│         ┌─────────┴─────────┐                               │
+│         │ ok: false         │ ok: true                      │
+│         ▼                   ▼                               │
+│   return 400 +         ValidatedInput                       │
+│   全エラー一覧               │                               │
+│                              │                              │
+└──────────────────────────────┼──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│ ドメイン層                                                   │
+│                                                             │
+│   new DraftRingi(id, validatedInput)                        │
+│        │                                                    │
+│        ▼                                                    │
+│   不変条件チェック（検証済みデータ前提）                       │
+│        │                                                    │
+│        ▼                                                    │
+│   DraftRingi インスタンス                                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 実装例
+
+**正規例:** Section 1.1「実装例（正規例）」の DraftRingi を参照。ポイント:
+
+1. **境界層**: `validateRingiInput()` で複数エラーを集約
+2. **ドメイン層**: `DraftRingi` コンストラクタはドメイン不変条件のみチェック
+3. **Controller**: 検証後に `new DraftRingi(id, validation.value).submit(repository, clock)`
+
+**詳細な実装例:** Section 11.5「バリデーション結果の集約」を参照。
+
+**なぜ分離するか:**
+- 入力バリデーション: ユーザーに**全ての**問題を一度に伝えたい（UX向上）
+- 完全コンストラクタ: 不変条件は**即座に**失敗すべき（プログラミングエラーの検出）
 
 ### 2.2 依存の分類と生成方針
 
@@ -975,7 +1276,7 @@ class DraftRingi {
 |------|------|-----|---------|
 | **Pure Logic** | 外部リソース不使用、決定論的 | Validator, Calculator | ✅ コンストラクタ内生成 |
 | **Configured Logic** | 設定値に依存する Pure Logic | TaxCalculator(rate) | ✅ Config経由で内部生成 |
-| **External Resource** | 永続化、外部通信 | Store, Transport, API | ❌ メソッド引数で受け取る |
+| **External Resource** | 永続化、外部通信 | Repository, Gateway, API | ❌ メソッド引数で受け取る |
 | **Non-deterministic** | 時間、乱数 | Clock, RandomGenerator | ❌ メソッド引数で受け取る |
 
 #### 判断フローチャート
@@ -1217,8 +1518,8 @@ describe("経費精算の上限チェック", () => {
 InMemory 実装またはモックを使用。
 
 ```typescript
-// InMemory Store（テスト用）
-class InMemoryRingiStore implements RingiStore {
+// InMemory Repository（テスト用）
+class InMemoryRingiRepository implements RingiRepository {
   private ringis = new Map<string, Ringi>();
 
   async save(ringi: Ringi): Promise<void> {
@@ -1230,13 +1531,16 @@ class InMemoryRingiStore implements RingiStore {
   }
 }
 
-// テスト
+// テスト（正規例は Section 1.1 参照）
 describe("DraftRingi", () => {
-  it("申請後にStoreに保存される", async () => {
-    const store = new InMemoryRingiStore();
-    const ringi = await new DraftRingi(data).submit(store);
+  it("申請後にRepositoryに保存される", async () => {
+    const repository = new InMemoryRingiRepository();
+    const clock = new FixedClock(new Date("2025-01-25"));
+    const id = RingiId.generate();
+    
+    const ringi = await new DraftRingi(id, validData).submit(repository, clock);
 
-    expect(await store.findById(ringi.id)).toEqual(ringi);
+    expect(await repository.findById(ringi.id)).toEqual(ringi);
   });
 });
 ```
@@ -1274,7 +1578,7 @@ describe("請求書発行", () => {
          /\
         /E2E\          <- 最小限（主要フロー）
        /------\
-      / 統合   \       <- Command のテスト（Store モック）
+      / 統合   \       <- Command のテスト（Repository モック）
      /----------\
     /   単体     \     <- Pure Logic, Query のテスト
    /--------------\
@@ -1283,7 +1587,7 @@ describe("請求書発行", () => {
 | テスト種類 | 対象 | モック |
 |-----------|------|--------|
 | 単体 | Query, Pure Logic 依存 | なし |
-| 統合 | Command | Store, Transport のみ |
+| 統合 | Command | Repository, Gateway のみ |
 | E2E | ユースケース全体 | なし（実環境） |
 
 ### 2.5 完全な実装例
@@ -1378,24 +1682,20 @@ const report = await new DraftExpenseReport(items, currentUser, config)
 
 ```typescript
 // ❌ Bad: else句
-class DraftRingi {
-  async submit(store: RingiStore): Promise<SubmittedRingi> {
-    if (this.data.isValid()) {
-      return this.doSubmit(store);
-    } else {
-      throw new ValidationError("稟議データが不正です");
-    }
+async function processOrder(order: Order): Promise<ProcessedOrder> {
+  if (order.isValid()) {
+    return doProcess(order);
+  } else {
+    throw new ValidationError("注文データが不正です");
   }
 }
 
 // ✅ Good: ガード節
-class DraftRingi {
-  async submit(store: RingiStore): Promise<SubmittedRingi> {
-    if (!this.data.isValid()) {
-      throw new ValidationError("稟議データが不正です");
-    }
-    return this.doSubmit(store);
+async function processOrder(order: Order): Promise<ProcessedOrder> {
+  if (!order.isValid()) {
+    throw new ValidationError("注文データが不正です");
   }
+  return doProcess(order);
 }
 ```
 
@@ -1429,64 +1729,46 @@ class ApprovalLimitRate {
 
 ### 対称パス else と Polymorphism の境界
 
-**判断基準は「責務」であり「行数」ではない。**
+**判断基準（Section 1.8 より）:**
 
-| 判断基準 | 対応 | 例 |
-|---------|------|-----|
-| 値の選択のみ | 対称 else 許容 | 定数を返すだけ |
-| 独立した責務がある | Polymorphism | 計算ロジックが異なる |
-| 将来的に分岐が増える | Polymorphism | 3つ目が来そうな場合 |
+| ケース | 対応 |
+|--------|------|
+| 値の選択のみ（`isGold ? 0.2 : 0.1`） | 対称 else / 三項演算子 |
+| 各分岐で異なる計算ロジック | Polymorphism |
+| 各分岐に独立したテストケースが必要 | Polymorphism |
 
 ```typescript
-// ✅ 対称 else OK: 値の選択のみ（責務なし）
-discountRate(): number {
-  if (this.member.isGold()) {
-    return 0.2;
-  } else {
-    return 0.1;
-  }
-}
-
-// ✅ 三項演算子でも可
+// ✅ 対称 else OK: 値の選択のみ
 discountRate(): number {
   return this.member.isGold() ? 0.2 : 0.1;
 }
+
+// ❌ 対称 else NG: 各分岐が異なる計算ロジックを持つ
+// → GoldMemberDiscount / StandardMemberDiscount で Polymorphism
 ```
-
-```typescript
-// ❌ 対称 else NG: 各分岐が独立した責務（計算ロジック）を持つ
-calculateDiscount(expense: Expense): Money {
-  if (this.employee.isManager()) {
-    // 管理職: 交際費は満額、それ以外は80%
-    return expense.category === ExpenseCategory.ENTERTAINMENT
-      ? expense.amount
-      : expense.amount.multiply(0.8);
-  } else {
-    // 一般社員: 一律70%
-    return expense.amount.multiply(0.7);
-  }
-}
-
-// ✅ Polymorphism で分離
-interface ExpenseReimbursementRule {
-  calculate(expense: Expense): Money;
-}
-
-class ManagerReimbursementRule implements ExpenseReimbursementRule { ... }
-class StaffReimbursementRule implements ExpenseReimbursementRule { ... }
-```
-
-**チェック:** 「この分岐にテストを書くなら、別々のテストケースになるか？」→ Yes なら Polymorphism を検討。
 
 ## 5. 条件式の明確化
 
-### 条件の種類に応じて抽出せよ
+### 条件の抽出ルール
 
-| 条件の種類 | 対応 |
-|-----------|------|
-| 自明な単一条件 | そのまま書いてよい |
-| 意味が不明確な単一条件 | `is_xxx` 変数に抽出せよ |
-| 複合条件（2つ以上） | Query クラスに抽出せよ |
+| 条件 | 使用箇所 | 対応 |
+|------|---------|------|
+| 自明な単一条件 | どこでも | そのまま |
+| 不明確な単一条件 | どこでも | `isXxx` 変数に抽出 |
+| 複合条件（2条件以上）| 1箇所のみ | `isXxx` 変数に抽出 |
+| 複合条件（2条件以上）| **2箇所以上** | **Query クラスに抽出** |
+
+**判断フロー:**
+
+```
+この条件は...
+├─ 自明か？（null/空/enum比較） → そのまま
+├─ 単一条件か？
+│   └─ YES → isXxx 変数に抽出
+└─ 複合条件（2条件以上）か？
+    ├─ 1箇所のみで使用 → isXxx 変数に抽出
+    └─ 2箇所以上で使用 → Query クラスに抽出
+```
 
 ```typescript
 // ✅ OK: 自明な単一条件
@@ -1631,6 +1913,58 @@ function createReservation(data: ReservationData): void { /* ... */ }
 ❌ stores/order.py      # ディレクトリ名はNG
 ```
 
+#### `_foundation/` は例外（Shared Kernel）
+
+`_foundation/` ディレクトリは本ルールの**唯一の例外**である。DDD の **Shared Kernel** に相当する。
+
+| 禁止 | 許容 | 理由 |
+|------|------|------|
+| `common/`, `shared/` | `_foundation/` | 「何でも入れる」汎用フォルダではなく、明確な責務を持つ |
+
+**`_foundation/` に配置するもの:**
+- エラー基底クラス（`DomainError`, `InfrastructureError`）
+- 値オブジェクト基底（`Money`, `DateRange` 等の共通型）
+- 型定義（`Result<T>`, `ValidationResult<T>` 等）
+
+**`_foundation/` に配置しないもの:**
+- ユーティリティ関数（→ 各ドメインに配置）
+- 設定値（→ `config/` または各ドメイン）
+- ヘルパークラス（→ 使用するドメインに配置）
+
+**Shared Kernel としてのガバナンス:**
+
+| ルール | 理由 |
+|--------|------|
+| 変更には全チームの合意が必要 | foundation の変更は全ドメインに影響 |
+| 最小限に保つ | 迷ったら各ドメインに配置 |
+| 定期的なレビュー | 四半期ごとに「本当に共有が必要か」を見直す |
+
+**配置基準:**
+- 3つ以上のドメインで使用される → `_foundation/`
+- 2つのドメインで使用される → 一方のドメインに配置し、もう一方から参照
+- 1つのドメインでのみ使用 → そのドメインに配置
+
+```
+✅ Good:
+src/
+├── _foundation/          ← アンダースコアでソート上位に
+│   ├── errors/
+│   │   ├── DomainError.ts
+│   │   └── InfrastructureError.ts
+│   └── types/
+│       ├── Money.ts
+│       └── Result.ts
+├── ringis/
+├── expenses/
+└── approvals/
+
+❌ Bad:
+src/
+├── common/               ← 何でも入れる汎用フォルダ化
+│   ├── utils.ts          ← 責務不明確
+│   └── helpers.ts        ← 責務不明確
+```
+
 ### Screaming Architecture
 
 ディレクトリを見れば「何のシステムか」が分かるようにせよ。
@@ -1699,56 +2033,860 @@ for (const ringi of allRingis) {
 2. **変更するコード:** 変更箇所のみリファクタリングせよ
 3. **大規模リファクタ:** チームで合意後、モジュール単位で実施せよ
 
+## 11. エラー処理
+
+### 11.1 エラークラスの分類
+
+#### エラー階層
+
+```
+Error
+├── DomainError (ビジネスルール違反)
+│   ├── ValidationError (入力検証エラー → 400)
+│   ├── NotFoundError (リソース不存在 → 404)
+│   ├── ConflictError (競合、重複 → 409)
+│   ├── AuthorizationError (権限不足 → 403)
+│   └── BusinessRuleViolationError (その他のビジネスルール → 422)
+│
+└── InfrastructureError (技術的障害)
+    ├── TransientError (一時的障害、リトライ可能 → 503)
+    └── PermanentError (恒久的障害 → 500)
+```
+
+#### HTTP ステータスコードとの対応
+
+| エラー種別 | HTTP Status | 用途 | 例 |
+|-----------|-------------|------|-----|
+| ValidationError | 400 | 入力形式エラー | 必須項目未入力、形式不正 |
+| AuthorizationError | 403 | 権限不足 | 承認権限なし |
+| NotFoundError | 404 | リソース不存在 | 稟議が存在しない |
+| ConflictError | 409 | 競合・重複 | 二重申請、楽観ロック失敗 |
+| BusinessRuleViolationError | 422 | ビジネスルール違反 | 金額上限超過 |
+| TransientError | 503 | 一時的障害 | DB接続タイムアウト |
+| PermanentError | 500 | 恒久的障害 | 設定ミス |
+
+#### 基底クラス
+
+```typescript
+abstract class DomainError extends Error {
+  abstract readonly code: string;
+  
+  constructor(message: string) {
+    super(message);
+    this.name = this.constructor.name;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+abstract class InfrastructureError extends Error {
+  abstract readonly code: string;
+  
+  /** リトライ可能かどうか（詳細は 11.11 参照） */
+  abstract readonly retryable: boolean;
+  
+  /** 推奨リトライ間隔（ミリ秒）。リトライ不可の場合は undefined */
+  abstract readonly suggestedRetryAfterMs?: number;
+  
+  constructor(message: string, readonly cause?: Error) {
+    super(message);
+    this.name = this.constructor.name;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+// DomainError のサブクラス（必要に応じて使用）
+abstract class NotFoundError extends DomainError {
+  readonly httpStatus = 404;
+}
+
+abstract class ConflictError extends DomainError {
+  readonly httpStatus = 409;
+}
+
+abstract class AuthorizationError extends DomainError {
+  readonly httpStatus = 403;
+}
+
+abstract class BusinessRuleViolationError extends DomainError {
+  readonly httpStatus = 422;
+}
+```
+
+**使い分け:**
+- 直接 `DomainError` を継承: シンプルなケース
+- サブクラスを継承: HTTP ステータスコードの自動マッピングが必要な場合
+
+### 11.2 命名規則
+
+| 項目 | 規則 | 例 |
+|------|------|-----|
+| サフィックス | `Error` | ✅ `RingiAmountExceededError` |
+| 命名パターン | `{Entity}{原因}Error` | ✅ `ExpenseReportPolicyViolationError` |
+| 禁止 | `Exception` サフィックス | ❌ `RingiAmountExceededException` |
+
+```typescript
+// ✅ Good: Entity + 原因 + Error
+class RingiAmountExceededError extends DomainError {
+  readonly code = "RINGI_AMOUNT_EXCEEDED";
+}
+class RingiApprovalRouteNotFoundError extends DomainError {
+  readonly code = "RINGI_APPROVAL_ROUTE_NOT_FOUND";
+}
+class ExpenseReportPolicyViolationError extends DomainError {
+  readonly code = "EXPENSE_REPORT_POLICY_VIOLATION";
+}
+
+// ❌ Bad
+class RingiAmountExceededException extends DomainError {}  // Exception禁止
+class AmountExceededError extends DomainError {}           // Entity名なし
+```
+
+### 11.3 どこで投げるか
+
+| 場所 | 投げるエラー | 例 |
+|------|------------|-----|
+| Constructor | DomainError | 不変条件違反（Complete Constructor） |
+| Command メソッド | DomainError | ビジネスルール違反 |
+| Repository実装 | InfrastructureError | DB接続失敗 |
+| ReadModel | InfrastructureError | タイムアウト |
+
+#### Query と例外
+
+**原則:** Query は例外を投げない。計算不能な状態は Constructor で検証すべき。
+
+**例外（許容）:**
+- 数学的に不可能な計算（ゼロ除算、オーバーフロー）
+- ランタイムでのみ検出可能なエラー
+
+```typescript
+// ✅ Good: Constructor で検証
+class TaxOn {
+  constructor(private readonly subtotal: Money) {
+    if (subtotal.isNegative()) {
+      throw new TaxSubtotalInvalidError(subtotal);
+    }
+    // rate がゼロの場合は許容（税率0%は有効）
+  }
+  
+  amount(): Money {
+    return this.subtotal.multiply(0.10); // 常に成功
+  }
+}
+
+// ❌ Bad: Query 内で例外
+class TaxOn {
+  constructor(private readonly subtotal: Money) {}
+  
+  amount(): Money {
+    if (this.subtotal.isNegative()) {
+      throw new TaxSubtotalInvalidError(); // Query で例外は不適切
+    }
+    return this.subtotal.multiply(0.10);
+  }
+}
+```
+
+### 11.4 エラー情報の構造
+
+#### 必須プロパティ
+
+| プロパティ | 型 | 用途 |
+|-----------|-----|------|
+| `code` | `string` | エラー識別、ログ分析 |
+| `message` | `string` | 人間可読なメッセージ |
+| `name` | `string` | クラス名（自動設定） |
+
+#### コンテキスト情報（推奨）
+
+デバッグに必要な情報は型付きプロパティとして定義せよ。
+
+```typescript
+class RingiAmountExceededError extends DomainError {
+  readonly code = "RINGI_AMOUNT_EXCEEDED";
+  
+  constructor(
+    readonly ringiId: RingiId,
+    readonly amount: Money,
+    readonly limit: Money
+  ) {
+    super(`稟議金額(${amount.value})が上限(${limit.value})を超えています`);
+  }
+}
+
+// 使用
+throw new RingiAmountExceededError(
+  ringi.id,
+  ringi.amount,
+  approver.approvalLimit
+);
+```
+
+### 11.5 バリデーション結果の集約（境界層）
+
+**適用範囲:** このセクションは境界層での入力バリデーションに適用。ドメイン層ではビジネスルール違反時に例外を投げる。
+
+複数の入力バリデーションエラーを集約する場合は、Result型（ValidationResult）を使用せよ。
+
+```typescript
+// ValidationViolation（値オブジェクト、Error を継承しない）
+type ValidationResult<T> = 
+  | { ok: true; value: T }
+  | { ok: false; errors: ValidationViolation[] };
+
+// 境界層での入力バリデーション
+function validateRingiInput(data: unknown): ValidationResult<ValidatedRingiInput> {
+  const errors: ValidationViolation[] = [];
+  
+  // 入力形式のチェック（事前チェック可能）
+  if (!data.title) {
+    errors.push(new ValidationViolation('title', 'REQUIRED', '件名は必須です'));
+  }
+  if (data.amount === undefined) {
+    errors.push(new ValidationViolation('amount', 'REQUIRED', '金額は必須です'));
+  } else if (data.amount < 0) {
+    errors.push(new ValidationViolation('amount', 'MIN_VALUE', '金額は0以上です'));
+  }
+  
+  if (errors.length > 0) {
+    return { ok: false, errors };
+  }
+  return { ok: true, value: data as ValidatedRingiInput };
+}
+
+// 使用（Controller / Handler）
+const result = validateRingiInput(req.body);
+if (!result.ok) {
+  return res.status(400).json({ errors: result.errors });
+}
+// ここから先はドメイン層（例外を使用）
+const draft = new DraftRingi(result.value);
+```
+
+**使い分け:** 境界層の入力検証 → Result型、ドメイン層のビジネスルール違反 → 例外。
+
+**注意:** neverthrow や fp-ts は導入しない。TypeScriptエコシステムとの整合性、学習コストを考慮し、軽量な discriminated union で十分。
+
+### 11.6 Pending Object Pattern との関係
+
+状態遷移の失敗は例外を投げる。ただし、「却下」のような**正常な状態遷移**は例外ではない。
+
+```typescript
+// 例外: ビジネスルール違反（予期しない失敗）
+// ※ 正規例は Section 1.1 参照。ここではエラー処理のみ抜粋
+async submit(repository: RingiRepository): Promise<SubmittedRingi> {
+  if (!this.hasApprovalRoute()) {
+    throw new RingiApprovalRouteNotFoundError(this.id);
+  }
+  // ... 正常処理
+}
+
+// 正常な状態遷移: 却下は例外ではない
+class AwaitingApproval {
+  async reject(reason: string, repository: RingiRepository): Promise<RejectedRingi> {
+    const rejected = RejectedRingi.fromAwaiting(this.ringi, reason);
+    await repository.save(rejected);
+    return rejected; // 例外ではなく、新しい状態を返す
+  }
+}
+```
+
+| 状況 | 対応 |
+|------|------|
+| ビジネスルール違反（設定ミス等） | DomainError を throw |
+| インフラ障害 | InfrastructureError を throw |
+| 正常な状態遷移（却下、キャンセル等） | 新しい状態オブジェクトを return |
+
+### 11.7 境界層でのエラーハンドリング
+
+Controller/Handler でドメインエラーをキャッチし、HTTPレスポンスに変換せよ。
+
+**HTTP ステータスコードの詳細:** Section 11.1「HTTP ステータスコードとの対応」を参照。
+
+**実装例:** Section 11.12「エラーハンドリングミドルウェア」を参照。
+
+### 11.8 InfrastructureError と cause
+
+InfrastructureError は元の例外を `cause` として保持せよ。
+
+```typescript
+class DatabaseConnectionError extends InfrastructureError {
+  readonly code = "DATABASE_CONNECTION_FAILED";
+  
+  constructor(cause: Error) {
+    super("データベース接続に失敗しました", cause);
+  }
+}
+
+// Repository実装での使用
+class PostgresRingiRepository implements RingiRepository {
+  async save(ringi: Ringi): Promise<void> {
+    try {
+      await this.conn.execute(/* ... */);
+    } catch (e) {
+      throw new DatabaseConnectionError(e as Error);
+    }
+  }
+}
+```
+
+### 11.9 専用例外クラスの作成基準
+
+#### 判断フロー
+
+以下の質問に1つでも YES があれば**専用クラス**を作成せよ。すべて NO なら**汎用クラス（ValidationViolation）**を使用せよ。
+
+| 質問 | 判断基準 |
+|------|---------|
+| Q1: 業務用語として確立している？ | ドメインエキスパートが名前で呼ぶ、業務マニュアルに記載がある |
+| Q2: 特別なリカバリー処理が必要？ | 通常のエラーハンドリングとは異なる対応が必要 |
+| Q3: 異なるHTTPステータスコードを返す？ | 400以外（404, 409, 422, 500等）を返す |
+| Q4: ログ/モニタリングで区別したい？ | アラート設定、ダッシュボード表示で区別 |
+
+#### 具体例
+
+| ケース | 専用/汎用 | 理由 |
+|--------|----------|------|
+| タイトルが必須 | 汎用 | 技術的制約、400 Bad Request |
+| 金額が負数 | 汎用 | 技術的制約、400 Bad Request |
+| 金額が上限超過 | **専用** | 業務用語「決裁権限超過」、409 Conflict |
+| 承認ルートが見つからない | **専用** | 設定ミス、特別な対応が必要 |
+| 二重登録 | **専用** | 業務用語「重複申請」、409 Conflict |
+
+#### 専用クラスの実装
+
+```typescript
+// ✅ Good: 専用クラス（業務用語、特別なリカバリー）
+class RingiAmountExceededError extends DomainError {
+  readonly code = "RINGI_AMOUNT_EXCEEDED";
+  
+  constructor(
+    readonly ringiId: RingiId,
+    readonly requestedAmount: Money,
+    readonly maxAmount: Money
+  ) {
+    super(`稟議金額 ${requestedAmount.value} が上限 ${maxAmount.value} を超えています`);
+  }
+}
+
+class RingiDuplicateSubmissionError extends DomainError {
+  readonly code = "RINGI_DUPLICATE_SUBMISSION";
+  
+  constructor(
+    readonly ringiId: RingiId,
+    readonly existingRingiId: RingiId
+  ) {
+    super(`同一内容の稟議が既に申請されています: ${existingRingiId.value}`);
+  }
+}
+```
+
+#### ValidationViolation と DomainError の関係
+
+| 種類 | 用途 | 継承 | 使用場面 |
+|------|------|------|---------|
+| `ValidationViolation` | フィールドレベルの入力検証 | なし（値オブジェクト） | 境界層でのバリデーション |
+| `DomainError` | ビジネスルール違反 | Error を継承 | ドメイン層での例外 |
+
+**使い分け:**
+- **ValidationViolation**: 複数のフィールドエラーを集約して返したい場合（Result型と組み合わせ）
+- **DomainError**: 単一のビジネスルール違反で処理を中断したい場合（throw）
+
+```typescript
+// ValidationViolation → DomainError への変換が必要な場合
+class ValidationError extends DomainError {
+  readonly code = "VALIDATION_ERROR";
+  readonly httpStatus = 400;
+  
+  constructor(readonly violations: ValidationViolation[]) {
+    super(`バリデーションエラー: ${violations.length}件`);
+  }
+}
+```
+
+#### 汎用クラス（ValidationViolation）の実装
+
+```typescript
+// バリデーション違反（値オブジェクト、Error を継承しない）
+class ValidationViolation {
+  constructor(
+    readonly field: string,
+    readonly code: ValidationCode,
+    readonly message: string
+  ) {}
+}
+
+// バリデーションコード（型安全）
+type ValidationCode = 
+  | 'REQUIRED'
+  | 'MAX_LENGTH'
+  | 'MIN_LENGTH'
+  | 'MIN_VALUE'
+  | 'MAX_VALUE'
+  | 'INVALID_FORMAT'
+  | 'INVALID_ENUM';
+```
+
+**バリデーション実装:** `validateRingiInput()` のような関数で `ValidationResult<T>` を返す（Section 11.5）。
+
+#### YAGNI原則（優先順位付き判断フロー）
+
+**判断フロー:**
+
+1. **Q3: 異なるHTTPステータスコードを返す？** → YES なら専用クラス（最優先）
+2. **Q1: 業務用語として確立している？** → YES なら専用クラス
+3. **Q2, Q4: 特別な処理/モニタリングが必要？** → YES なら専用クラス
+4. **上記すべて NO** → 汎用クラス（ValidationViolation）で開始
+
+**YAGNI の適用:**
+- Q2, Q4 は「現時点で必要」な場合のみ YES
+- 「将来必要になるかも」は NO として扱う
+- 汎用クラスから専用クラスへの昇格は、実際に必要になった時点で行う
+
+**昇格のコスト軽減:**
+汎用 → 専用への変更を容易にするため、ValidationViolation には code を持たせ、後から専用エラーへのマッピングを追加できるようにしておく。
+
+### 11.10 例外クラスの配置（Colocation）
+
+#### 基本構造
+
+```
+src/
+├── _foundation/                    ← 基盤（すべてのドメインから参照）
+│   └── errors/
+│       ├── DomainError.ts          ← ドメインエラー基底クラス
+│       ├── InfrastructureError.ts  ← インフラエラー基底クラス
+│       └── ValidationViolation.ts  ← バリデーション違反
+│
+├── {entity}/                       ← 各ドメイン
+│   ├── {Entity}.ts                 ← 集約ルート
+│   ├── {Entity}Errors.ts           ← ドメインのエラー
+│   └── ...
+```
+
+#### 配置ルール
+
+| 条件 | 配置 |
+|------|------|
+| 基底クラス（DomainError等） | `_foundation/errors/` |
+| ドメイン固有エラー（5個以下） | `{Entity}Errors.ts` |
+| ドメイン固有エラー（6個以上） | `{entity}/errors/` サブディレクトリ |
+| 複数ドメインで共有 | `_foundation/errors/` |
+
+#### {Entity}Errors.ts の実装例
+
+```typescript
+// src/ringi/RingiErrors.ts
+import { DomainError } from '../_foundation/errors/DomainError';
+import { RingiId } from './RingiId';
+import { Money } from '../_foundation/types/Money';
+
+// 金額超過エラー
+export class RingiAmountExceededError extends DomainError {
+  readonly code = "RINGI_AMOUNT_EXCEEDED";
+  
+  constructor(
+    readonly ringiId: RingiId,
+    readonly requestedAmount: Money,
+    readonly maxAmount: Money
+  ) {
+    super(`稟議金額 ${requestedAmount.value} が上限 ${maxAmount.value} を超えています`);
+  }
+}
+
+// 承認ルート未設定エラー
+export class RingiApprovalRouteNotFoundError extends DomainError {
+  readonly code = "RINGI_APPROVAL_ROUTE_NOT_FOUND";
+  
+  constructor(readonly ringiId: RingiId) {
+    super(`稟議 ${ringiId.value} の承認ルートが設定されていません`);
+  }
+}
+
+// 重複申請エラー
+export class RingiDuplicateSubmissionError extends DomainError {
+  readonly code = "RINGI_DUPLICATE_SUBMISSION";
+  
+  constructor(
+    readonly ringiId: RingiId,
+    readonly existingRingiId: RingiId
+  ) {
+    super(`同一内容の稟議が既に申請されています: ${existingRingiId.value}`);
+  }
+}
+```
+
+#### 肥大化した場合の分割
+
+```typescript
+// src/ringi/errors/index.ts
+export * from './validation';
+export * from './approval';
+export * from './lifecycle';
+
+// src/ringi/errors/validation.ts
+export class RingiValidationError extends DomainError { ... }
+
+// src/ringi/errors/approval.ts
+export class RingiAmountExceededError extends DomainError { ... }
+export class RingiApprovalRouteNotFoundError extends DomainError { ... }
+
+// src/ringi/errors/lifecycle.ts
+export class RingiDuplicateSubmissionError extends DomainError { ... }
+export class RingiAlreadyApprovedError extends DomainError { ... }
+```
+
+### 11.11 InfrastructureError のリトライ戦略
+
+InfrastructureError は `retryable` と `suggestedRetryAfterMs` プロパティを持つ（基底クラス定義は Section 11.1）。
+
+#### 具体的な実装例
+
+```typescript
+// リトライ可能: DB接続エラー
+class DatabaseConnectionError extends InfrastructureError {
+  readonly code = "DATABASE_CONNECTION_FAILED";
+  readonly retryable = true;
+  readonly suggestedRetryAfterMs = 1000;
+  
+  constructor(cause: Error) {
+    super('データベース接続に失敗しました', cause);
+  }
+}
+
+// リトライ可能: 外部APIレート制限
+class ExternalApiRateLimitError extends InfrastructureError {
+  readonly code = "EXTERNAL_API_RATE_LIMIT";
+  readonly retryable = true;
+  
+  constructor(readonly retryAfterMs: number, cause?: Error) {
+    super(`レート制限を超えました。${retryAfterMs}ms後にリトライしてください`, cause);
+  }
+  
+  get suggestedRetryAfterMs(): number {
+    return this.retryAfterMs;
+  }
+}
+
+// リトライ不可: 設定エラー
+class InvalidConfigurationError extends InfrastructureError {
+  readonly code = "INVALID_CONFIGURATION";
+  readonly retryable = false;
+  readonly suggestedRetryAfterMs = undefined;
+  
+  constructor(readonly configKey: string, message: string) {
+    super(`設定エラー [${configKey}]: ${message}`);
+  }
+}
+```
+
+#### InfrastructureError の分類
+
+| エラー種別 | retryable | suggestedRetryAfterMs | 例 |
+|-----------|:---------:|:---------------------:|-----|
+| 一時的な接続障害 | `true` | 1000-5000 | DB接続タイムアウト |
+| レート制限 | `true` | API指定値 | 429 Too Many Requests |
+| 外部サービス障害 | `true` | 5000-30000 | 5xx エラー |
+| リソース枯渇 | `true` | 60000+ | ディスク/メモリ不足 |
+| 設定ミス | `false` | - | 接続文字列不正 |
+| 認証エラー | `false` | - | 認証情報無効 |
+
+### 11.12 Result型と例外の使い分け
+
+#### 基本原則: 発生場所で判断せよ
+
+| 発生場所 | 使用するもの | 理由 |
+|---------|------------|------|
+| **境界層**（入力バリデーション） | Result型（ValidationResult） | 複数エラー集約、ユーザーフィードバック |
+| **ドメイン層**（ビジネスルール） | 例外（DomainError） | 単一エラーで処理中断 |
+| **インフラ層**（外部リソース） | 例外（InfrastructureError） | 外部障害 |
+
+#### 判断フロー
+
+```
+このエラーは...
+
+1. どこで発生する？
+   ├─ 境界層（Controller, Handler） → 次へ
+   ├─ ドメイン層（Command, Query） → 例外（DomainError）
+   └─ インフラ層（Store実装, Gateway） → 例外（InfrastructureError）
+
+2. 境界層の場合:
+   ├─ 入力形式のチェック？ → Result型
+   ├─ 複数エラーを集約したい？ → Result型
+   └─ ドメインロジック呼び出し後のエラー → 例外をキャッチしてレスポンス変換
+```
+
+#### 具体例による判断
+
+| ケース | 発生場所 | Result / 例外 | 理由 |
+|--------|---------|:------------:|------|
+| タイトル未入力 | 境界層 | Result | 入力形式チェック |
+| 金額が負数 | 境界層 | Result | 入力形式チェック |
+| 金額が固定上限超過（例: 1億円） | 境界層 | Result | 入力形式チェック（上限値は固定） |
+| 金額が承認者権限超過 | ドメイン層 | 例外 | ビジネスルール（承認者に依存） |
+| 承認ルート未設定 | ドメイン層 | 例外 | 設定ミス |
+| DB接続失敗 | インフラ層 | 例外 | 外部リソース障害 |
+| 二重申請 | ドメイン層 | 例外 | 並行処理による競合 |
+
+**ポイント:**
+- 「金額が上限超過」は**上限の種類**で判断が分かれる
+  - 固定上限（システム全体で1億円まで） → 境界層で Result型
+  - 動的上限（承認者の権限に依存） → ドメイン層で例外
+
+#### 実装パターン
+
+```typescript
+// Controller（境界層）での使い分け
+async function submitRingi(req: Request): Promise<Response> {
+  // 1. バリデーション（Result型）
+  const validationResult = validateRingiData(req.body);
+  if (!validationResult.ok) {
+    return Response.badRequest({
+      code: 'VALIDATION_ERROR',
+      errors: validationResult.errors.map(e => ({
+        field: e.field,
+        code: e.code,
+        message: e.message
+      }))
+    });
+  }
+  
+  // 2. Command実行（例外を投げる可能性）※ 正規例は Section 1.1 参照
+  try {
+    const draft = new DraftRingi(RingiId.generate(), validationResult.value);
+    const ringi = await draft.submit(repository, clock);
+    return Response.created(ringi);
+  } catch (e) {
+    if (e instanceof RingiAmountExceededError) {
+      return Response.conflict({
+        code: e.code,
+        message: e.message,
+        requestedAmount: e.requestedAmount.value,
+        maxAmount: e.maxAmount.value
+      });
+    }
+    if (e instanceof DomainError) {
+      return Response.unprocessableEntity({
+        code: e.code,
+        message: e.message
+      });
+    }
+    // InfrastructureError は上位で処理
+    throw e;
+  }
+}
+```
+
+#### エラーハンドリングミドルウェア（拡張版）
+
+HTTP ステータスコードの対応は Section 11.1 の表を参照。
+
+```typescript
+const errorHandler: ErrorRequestHandler = (err, req, res, next) => {
+  // DomainError: クライアントエラー（httpStatus は基底クラスで定義）
+  if (err instanceof DomainError) {
+    const status = 'httpStatus' in err ? (err as any).httpStatus : 409;
+    return res.status(status).json({
+      type: 'domain_error',
+      code: err.code,
+      message: err.message
+    });
+  }
+  
+  // InfrastructureError: サーバーエラー（リトライ戦略対応）
+  if (err instanceof InfrastructureError) {
+    console.error('[InfrastructureError]', err.code, err.message, err.cause);
+    const status = err.retryable ? 503 : 500;
+    const headers: Record<string, string> = {};
+    if (err.suggestedRetryAfterMs) {
+      headers['Retry-After'] = Math.ceil(err.suggestedRetryAfterMs / 1000).toString();
+    }
+    return res.status(status).set(headers).json({
+      type: 'infrastructure_error',
+      code: err.code,
+      message: 'サービスが一時的に利用できません',
+      retryable: err.retryable
+    });
+  }
+  
+  // 予期しないエラー
+  console.error('[UnexpectedError]', err);
+  return res.status(500).json({
+    type: 'unexpected_error',
+    code: 'INTERNAL_ERROR',
+    message: 'サーバーエラーが発生しました'
+  });
+};
+```
+
 ---
 
-## チェックリスト
+## 12. フレームワーク別ガイダンス
 
-### クラス分類
-- [ ] Command / Query / ReadModel のいずれかに明確に分類されているか
-- [ ] Command: Pending Object Pattern に従っているか
-- [ ] Query: 純粋計算のみか（外部リソースなし）
-- [ ] Query: 出力の意味に応じたメソッド名か（amount/count/rate/ok/text/result/resolve）
-- [ ] ReadModel: 読み取り専用か（書き込みなし）
-- [ ] 複数ロジック: ポリモーフィズムで実装されているか（enum + switch なし）
-- [ ] 境界層以外で条件分岐していないか
+### NestJS
 
-### 命名
-- [ ] Command: `{状態}{Entity}` 形式か（Draft, Pending, Awaiting, Unvalidated, Outgoing等）
-- [ ] Query: `{計算内容}` 形式か
-- [ ] ReadModel: `{取得内容}` 形式か
-- [ ] Store: `{Entity}Store` 形式か（Repository は非推奨）
-- [ ] Store: Interface で定義し、単一キー検索に絞っているか
-- [ ] クラス名とメソッド名で意味が重複していないか
+| 本スキルのルール | NestJS での適用 |
+|-----------------|----------------|
+| Repository/Store をメソッド引数で受け取る | `@Injectable()` で DI を使用してよい |
+| 完全コンストラクタ | DTO → Domain Object 変換時に適用 |
+| Resolver | NestJS の GraphQL Resolver とは別概念。混同注意 |
 
-### 設計
-- [ ] 完全コンストラクタか（生成時点で有効な状態か）
-- [ ] イミュータブルか（変更時は新しいオブジェクトを返すか）
-- [ ] 深いイミュータビリティが必要な箇所は対応しているか
-- [ ] 継承を使っていないか（Interface + Composition か）
-- [ ] 引数は1-2個か（引数優先、行数は二の次）
-- [ ] 行数は10行以内か
+```typescript
+// NestJS での許容パターン（正規例は Section 1.1 参照）
+@Injectable()
+class SubmitRingiUseCase {
+  constructor(
+    private readonly repository: RingiRepository,
+    private readonly clock: Clock
+  ) {} // DI 許容
 
-### 依存生成
-- [ ] Pure Logic はコンストラクタ内で生成しているか
-- [ ] Configured Logic は Config 経由でコンストラクタ内生成しているか
-- [ ] Config は変更頻度・ライフサイクルで適切に分割されているか
-- [ ] External Resource（Store等）はメソッド引数で受け取っているか
-- [ ] Non-deterministic（Clock, Random）はメソッド引数で受け取っているか
-- [ ] 依存クラスの単体テストが存在するか（親クラスでモック不要にするため）
+  async execute(data: RingiData): Promise<SubmittedRingi> {
+    const validation = validateRingiInput(data);
+    if (!validation.ok) {
+      throw new ValidationError(validation.errors);
+    }
+    const draft = new DraftRingi(RingiId.generate(), validation.value);
+    return draft.submit(this.repository, this.clock);
+  }
+}
+```
 
-### コード品質
-- [ ] else 句を使っていないか（Early Return か、対称パスは例外）
-- [ ] 対称パスの判断は責務ベースか（行数ではない）
-- [ ] 複合条件は Query クラスに抽出されているか
-- [ ] プリミティブ型を直接使っていないか
-- [ ] マジックナンバーは定数化されているか
+### Next.js (App Router)
 
-### YAGNI チェック
-- [ ] 分岐が2つだけなら Polymorphism を避けているか
-- [ ] 1回しか使わない計算をクラス化していないか
-- [ ] 過剰なクラス分割をしていないか
+| 本スキルのルール | Next.js での適用 |
+|-----------------|-----------------|
+| Command/Query 分類 | Server Actions = Command, RSC = ReadModel |
+| Repository | Server Actions 内で直接使用可 |
+| エラー処理 | Server Actions は例外を throw せず Result 型を返す |
 
-### ディレクトリ構造
-- [ ] 技術的レイヤー名をディレクトリ名に使っていないか
-- [ ] ディレクトリを見て「何のシステムか」分かるか
-- [ ] 各ディレクトリの子は5つ以下か
+```typescript
+// Server Action（正規例は Section 1.1 参照）
+'use server'
+async function submitRingi(data: RingiData): Promise<ActionResult<SubmittedRingi>> {
+  const validation = validateRingiInput(data);
+  if (!validation.ok) {
+    return { ok: false, errors: validation.errors };
+  }
+  
+  try {
+    const draft = new DraftRingi(RingiId.generate(), validation.value);
+    const ringi = await draft.submit(repository, systemClock);
+    return { ok: true, data: ringi };
+  } catch (e) {
+    if (e instanceof DomainError) {
+      return { ok: false, error: { code: e.code, message: e.message } };
+    }
+    throw e; // InfrastructureError は上位で処理
+  }
+}
+```
+
+### Spring Boot (Java/Kotlin)
+
+| 本スキルのルール | Spring での適用 |
+|-----------------|----------------|
+| Repository | Spring Data Repository をそのまま使用 |
+| DI | `@Autowired` / コンストラクタインジェクション |
+| Transition | Record / data class で実装 |
+
+---
+
+## 13. アーキテクチャ別の適用
+
+### モノリス
+
+本スキルはモノリスアーキテクチャに最適化されている。そのまま適用せよ。
+
+### マイクロサービス
+
+| 本スキルのルール | マイクロサービスでの適用 |
+|-----------------|------------------------|
+| Repository/Store | サービス内の永続化に限定 |
+| 外部サービス呼び出し | `Gateway` として分離（Repository とは別） |
+| Pending Object Pattern | サービス内の状態遷移に適用 |
+| サービス間の状態遷移 | Saga パターンを検討 |
+
+**追加エラー分類:**
+
+```typescript
+// 外部サービスエラー
+class ExternalServiceError extends InfrastructureError {
+  readonly code = "EXTERNAL_SERVICE_ERROR";
+  readonly retryable = true;
+  readonly suggestedRetryAfterMs = 5000;
+  
+  constructor(
+    readonly serviceName: string,
+    cause: Error
+  ) {
+    super(`External service ${serviceName} failed`, cause);
+  }
+}
+```
+
+**サービス間通信のパターン:**
+
+```typescript
+// Gateway（外部サービス呼び出し用）
+interface PaymentGateway {
+  charge(amount: Money, cardToken: string): Promise<PaymentResult>;
+}
+
+// 使用（Command 内）
+class ConfirmOrder {
+  async execute(
+    repository: OrderRepository,
+    paymentGateway: PaymentGateway
+  ): Promise<ConfirmedOrder> {
+    const payment = await paymentGateway.charge(this.order.total, this.cardToken);
+    if (!payment.ok) {
+      throw new PaymentFailedError(payment.error);
+    }
+    const confirmed = this.order.confirm(payment.transactionId);
+    await repository.save(confirmed);
+    return confirmed;
+  }
+}
+```
+
+---
+
+## クイックチェックリスト（20項目）
+
+コードレビュー時に使用。詳細は各 Section を参照。
+
+### 分類（Section 1）
+- [ ] **4分類**: Command / Transition / Query / ReadModel のいずれかに分類されているか
+- [ ] **副作用の分離**: Command のみ副作用あり、他は純粋関数か
+- [ ] **境界層**: switch/if分岐はドメイン層ではなく境界層にあるか
+
+### 設計（Section 2）
+- [ ] **完全コンストラクタ**: 生成時点で有効な状態か
+- [ ] **イミュータブル**: 変更時は新しいオブジェクトを返すか
+- [ ] **依存注入**: External Resource / Clock はメソッド引数で受け取っているか
+
+### コード品質（Section 3-5）
+- [ ] **Early Return**: else 句なしでガード節を使っているか
+- [ ] **単一責任**: メソッドは1つのことだけをしているか
+- [ ] **引数**: 2個以下か（多い場合はオブジェクトにまとめる）
+
+### Polymorphism（Section 1.4, 1.8）
+- [ ] **ポリモーフィズム判断**: 各分岐で異なる計算ロジック or 独立テストが必要な場合のみか
+- [ ] **YAGNI**: 分岐2つ＆値選択のみなら if/else で十分か
+
+### 命名（各 Section）
+- [ ] **Command**: `{状態}{Entity}`（DraftRingi, PendingOrder）
+- [ ] **Repository**: `{Entity}Repository`（Interface定義、単一キー検索）
+- [ ] **エラー**: `{Entity}{原因}Error`（Exception禁止）
+
+### エラー処理（Section 11）
+- [ ] **階層**: DomainError / InfrastructureError のいずれかを継承
+- [ ] **code**: 全エラーに一意の code プロパティあり
+- [ ] **バリデーション**: 入力検証は Result型、ビジネスルール違反は例外
+
+### ディレクトリ（Section 10）
+- [ ] **機能ベース**: 技術層ではなく機能でディレクトリを分けているか
+- [ ] **5つルール**: 各ディレクトリの直接の子は5つ以下か
+
+### テスト（Section 2.4）
+- [ ] **Pure Logic**: 依存クラス自体の単体テストがあるか（親でモック不要に）
