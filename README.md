@@ -9,11 +9,21 @@ Claude Code用のリファクタリングスキル。コードレビュー・設
 - **Polymorphism優先**: switch/if-else より多態性
 - **Screaming Architecture**: ディレクトリ構造が目的を語る
 
-## 使い方
+## ワークフロー
+
+### 新規プロジェクト
 
 ```
-/strict-refactoring          # スキルをロード
-CLAUDE.mdを生成して           # プロジェクト固有の設定を自動生成
+1. Claudeと対話してSPEC.mdを作成
+2. 「CLAUDE.mdを生成して」でプロジェクト固有設定を自動生成
+3. 開発開始
+```
+
+### 既存プロジェクトのリファクタリング
+
+```
+1. /strict-refactoring をロード
+2. リファクタリング対象を指定して相談
 ```
 
 ## ドキュメント
