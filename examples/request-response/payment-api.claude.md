@@ -128,11 +128,10 @@ src/
 │       ├── PaymentRequestMapper.ts
 │       └── PaymentResponseMapper.ts
 │
-└── value-objects/                # 値オブジェクト・共通型
-    ├── Money.ts
-    ├── Currency.ts
-    ├── IdempotencyKey.ts
-    └── MerchantId.ts
+├── Money.ts                      # 全ドメインで使用 → src/ 直下
+├── Currency.ts
+├── IdempotencyKey.ts
+└── MerchantId.ts
 ```
 
 ## State Transitions

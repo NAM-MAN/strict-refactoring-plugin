@@ -115,11 +115,10 @@ src/
 │       ├── MonthlyReportExporter.ts       # Command
 │       └── ReportExport.test.ts
 │
-└── value-objects/                # 値オブジェクト・共通型
-    ├── Money.ts
-    ├── DateRange.ts
-    ├── Clock.ts                 #   Non-deterministic依存
-    └── AuditContext.ts          #   監査コンテキスト
+├── Money.ts                      # 全ドメインで使用 → src/ 直下
+├── DateRange.ts
+├── Clock.ts                      # Non-deterministic依存
+└── AuditContext.ts               # 監査コンテキスト
 ```
 
 ## State Transitions

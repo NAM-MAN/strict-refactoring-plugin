@@ -122,11 +122,10 @@ src/
 │       ├── EventSerializer.ts
 │       └── Serialization.test.ts
 │
-└── value-objects/                # 値オブジェクト
-    ├── Money.ts
-    ├── OrderId.ts
-    ├── ProductId.ts
-    └── IdempotencyKey.ts
+├── Money.ts                      # 全ドメインで使用 → src/ 直下
+├── OrderId.ts
+├── ProductId.ts
+└── IdempotencyKey.ts
 ```
 
 ## Event Flow
