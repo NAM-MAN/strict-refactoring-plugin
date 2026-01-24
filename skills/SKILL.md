@@ -2491,22 +2491,36 @@ type ValidationCode =
 type ValidationResult<T> = Result<T, ValidationError>;
 
 // バリデーション関数
+interface RawRingiInput {
+  title?: string;
+  amount?: number;
+}
+
 function validateRingiInput(data: unknown): ValidationResult<ValidatedRingiInput> {
   const violations: ValidationViolation[] = [];
   
-  if (!data.title) {
+  // 型ガード
+  if (typeof data !== 'object' || data === null) {
+    return Result.err(DomainErrors.validation([
+      new ValidationViolation('data', 'INVALID_FORMAT', '入力データが不正です')
+    ]));
+  }
+  
+  const input = data as RawRingiInput;
+  
+  if (!input.title) {
     violations.push(new ValidationViolation('title', 'REQUIRED', '件名は必須です'));
   }
-  if (data.amount === undefined) {
+  if (input.amount === undefined) {
     violations.push(new ValidationViolation('amount', 'REQUIRED', '金額は必須です'));
-  } else if (data.amount < 0) {
+  } else if (input.amount < 0) {
     violations.push(new ValidationViolation('amount', 'MIN_VALUE', '金額は0以上です'));
   }
   
   if (violations.length > 0) {
     return Result.err(DomainErrors.validation(violations));
   }
-  return Result.ok(data as ValidatedRingiInput);
+  return Result.ok({ title: input.title!, amount: input.amount! } as ValidatedRingiInput);
 }
 
 // 使用（Controller / Handler）
@@ -2545,13 +2559,14 @@ class AwaitingApproval {
   }
   
   // 正常な状態遷移: 却下も成功として返す
+  // ドメインエラーがない場合は Result を使わず Promise<T> を返す
   async reject(
     reason: string,
     repository: RingiRepository
-  ): Promise<Result<RejectedRingi, never>> {
+  ): Promise<RejectedRingi> {
     const rejected = RejectedRingi.from(this, reason);
     await repository.save(rejected);
-    return Result.ok(rejected); // 却下も成功
+    return rejected;
   }
 }
 ```
@@ -2995,6 +3010,7 @@ it('金額超過時に例外をスローする', () => {
 
 // After: Result 型をテスト
 it('金額超過時にエラーを返す', () => {
+  const id = RingiId.generate();
   const result = DraftRingi.create(id, { amount: Money.of(1000000) });
   
   expect(result.ok).toBe(false);
@@ -3054,14 +3070,21 @@ describe("ExpenseValidator", () => {
 
 // DraftExpenseReport の統合テスト（Validator をモックしない）
 describe("DraftExpenseReport", () => {
+  const config: ExpenseConfig = { maxAmountPerItem: Money.of(50_000) };
+  const repository = new InMemoryExpenseReportRepository();
+  const clock = new FixedClock(new Date("2025-01-25"));
+
   it("有効な経費精算を申請できる", async () => {
-    const report = await new DraftExpenseReport(validItems, config).submit(mockRepository);
-    expect(report.status).toBe(ExpenseStatus.SUBMITTED);
+    const validItems = [new ExpenseItem({ amount: Money.of(1000), category: "交通費" })];
+    const report = await new DraftExpenseReport(validItems, config).submit(repository, clock);
+    // Pending Object Pattern: 戻り値の型が状態を表す
+    expect(report).toBeInstanceOf(SubmittedExpenseReport);
   });
 
   it("無効な経費を含む場合は申請を拒否する", async () => {
+    const invalidItems = [new ExpenseItem({ amount: Money.of(-100), category: "交通費" })];
     await expect(
-      new DraftExpenseReport(invalidItems, config).submit(mockRepository)
+      new DraftExpenseReport(invalidItems, config).submit(repository, clock)
     ).rejects.toThrow(ValidationError);
   });
 });
@@ -3116,6 +3139,7 @@ describe("DraftRingi", () => {
     const repository = new InMemoryRingiRepository();
     const clock = new FixedClock(new Date("2025-01-25"));
     const id = RingiId.generate();
+    const validData: ValidatedRingiInput = { title: "テスト稟議", amount: Money.of(50000) };
     
     const ringi = await new DraftRingi(id, validData).submit(repository, clock);
 
@@ -3200,33 +3224,44 @@ describe("請求書発行", () => {
 
 ```typescript
 // tests/ringis/RingiTestFactory.ts
+interface RingiTestData {
+  readonly title: string;
+  readonly amount: Money;
+}
+
 export class RingiTestFactory {
-  private static readonly DEFAULTS: RingiData = {
+  private static readonly DEFAULTS: RingiTestData = {
     title: 'テスト稟議',
     amount: Money.of(10000),
-    status: RingiStatus.DRAFT,
   };
 
-  static draft(overrides?: Partial<RingiData>): DraftRingi {
+  static draft(overrides?: Partial<RingiTestData>): DraftRingi {
     const id = RingiId.generate();
     const data = { ...RingiTestFactory.DEFAULTS, ...overrides };
-    return DraftRingi.create(id, data).value;
+    const result = DraftRingi.create(id, data as ValidatedRingiInput);
+    if (!result.ok) {
+      throw new Error(`Test data creation failed: ${result.error.message}`);
+    }
+    return result.value;
   }
 
-  static submitted(overrides?: Partial<RingiData>): SubmittedRingi {
+  static async submitted(overrides?: Partial<RingiTestData>): Promise<SubmittedRingi> {
     const draft = RingiTestFactory.draft(overrides);
-    return draft.toSubmitted(new FixedClock(new Date()));
+    const repository = new InMemoryRingiRepository();
+    const clock = new FixedClock(new Date("2025-01-25"));
+    return draft.submit(repository, clock);
   }
 }
 
 // テストでの使用
 it('承認できる', async () => {
-  const ringi = RingiTestFactory.submitted({ amount: Money.of(50000) });
+  const ringi = await RingiTestFactory.submitted({ amount: Money.of(50000) });
   const repository = new InMemoryRingiRepository();
   
   const result = await ringi.approve(repository);
   
-  expect(result.status).toBe(RingiStatus.APPROVED);
+  // Pending Object Pattern: 戻り値の型が状態を表す
+  expect(result).toBeInstanceOf(ApprovedRingi);
 });
 ```
 
@@ -3304,9 +3339,10 @@ it('承認フローが正しく動作する', async () => {
 // 優先度 3: InMemory Repository（Command のテスト）
 it('申請後にRepositoryに保存される', async () => {
   const repository = new InMemoryRingiRepository();
+  const clock = new FixedClock(new Date("2025-01-25"));
   const draft = RingiTestFactory.draft();
-  await draft.submit(repository, clock);
-  expect(await repository.findById(draft.id)).toBeDefined();
+  const submitted = await draft.submit(repository, clock);
+  expect(await repository.findById(submitted.id)).toBeDefined();
 });
 
 // 優先度 4: Testcontainers（ReadModel、SQL検証）
@@ -3333,8 +3369,18 @@ it('複雑なクエリが正しく動作する', async () => {
 DB統合テストでは、トランザクションロールバックでテスト間の分離を実現。
 
 ```typescript
+// testDb, RingiTestFactory.insertSubmitted は事前にセットアップが必要
 describe('RingiApproval', () => {
+  let testDb: TestDatabase;
   let tx: Transaction;
+  
+  beforeAll(async () => {
+    testDb = await TestDatabase.create();
+  });
+  
+  afterAll(async () => {
+    await testDb.close();
+  });
   
   beforeEach(async () => {
     tx = await testDb.beginTransaction();
@@ -3344,18 +3390,18 @@ describe('RingiApproval', () => {
     await tx.rollback();
   });
   
-  it('承認後にステータスが更新される', async () => {
+  it('承認後に ApprovedRingi として取得できる', async () => {
     // Arrange
     const ringi = await RingiTestFactory.insertSubmitted(tx, { 
       amount: Money.of(50000) 
     });
+    const repository = new PostgresRingiRepository(tx);
     
     // Act
-    await approveRingi(ringi.id, tx);
+    const approved = await ringi.approve(repository);
     
-    // Assert
-    const updated = await findRingi(ringi.id, tx);
-    expect(updated.status).toBe(RingiStatus.APPROVED);
+    // Assert: Pending Object Pattern では型で状態を表現
+    expect(approved).toBeInstanceOf(ApprovedRingi);
   });
 });
 ```
@@ -3568,8 +3614,10 @@ describe("CheckoutService", () => {
     const service = new CheckoutService(paymentGateway);
     const result = await service.checkout(cart, card);
 
-    expect(result.isFailure()).toBe(true);
-    expect(result.error).toBeInstanceOf(CardDeclinedError);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBeInstanceOf(CardDeclinedError);
+    }
   });
 });
 ```
@@ -3660,7 +3708,7 @@ describe("StripePaymentGateway Contract", () => {
       CardToken.of("tok_visa")  // Stripe テストトークン
     );
     
-    expect(result.isSuccess()).toBe(true);
+    expect(result.ok).toBe(true);
   });
 
   it("拒否カードで決済が失敗する", async () => {
@@ -3669,8 +3717,10 @@ describe("StripePaymentGateway Contract", () => {
       CardToken.of("tok_chargeDeclined")
     );
     
-    expect(result.isFailure()).toBe(true);
-    expect(result.error.reason).toBe(PaymentFailureReason.CARD_DECLINED);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.reason).toBe(PaymentFailureReason.CARD_DECLINED);
+    }
   });
 });
 ```
@@ -3838,7 +3888,10 @@ class SubmitRingiUseCase {
       return draftResult;
     }
     
-    return draftResult.value.submit(this.repository, this.clock);
+    // submit はドメインエラーがないので Promise<SubmittedRingi> を返す
+    // InfrastructureError は throw される（Controller でキャッチ）
+    const submitted = await draftResult.value.submit(this.repository, this.clock);
+    return Result.ok(submitted);
   }
 }
 
@@ -3885,17 +3938,11 @@ async function submitRingi(data: RingiData): Promise<ActionResult<SubmittedRingi
     return { ok: false, error: { code: draftResult.error.code, message: draftResult.error.message } };
   }
   
-  // 3. Command 実行（InfrastructureError は例外）
-  try {
-    const submitResult = await draftResult.value.submit(repository, systemClock);
-    if (!submitResult.ok) {
-      return { ok: false, error: { code: submitResult.error.code, message: submitResult.error.message } };
-    }
-    return { ok: true, data: submitResult.value };
-  } catch (e) {
-    // InfrastructureError は error.tsx で処理
-    throw e;
-  }
+  // 3. Command 実行
+  // submit はドメインエラーがないので Promise<SubmittedRingi> を返す
+  // InfrastructureError は throw されるので error.tsx で処理
+  const submitted = await draftResult.value.submit(repository, systemClock);
+  return { ok: true, data: submitted };
 }
 
 // クライアントでの使用
