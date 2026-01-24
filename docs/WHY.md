@@ -341,24 +341,296 @@ class SubmittedRingi {
 }
 ```
 
-**なぜ「Pending（保留中）」という名前か:**
-`DraftRingi`は「まだ申請されていない＝保留中の稟議」を表します。`submit()`を呼ぶと`SubmittedRingi`になる＝「保留」が解除される、というイメージです。
+### なぜ Pending Object Pattern なのか — 4つの代替案との比較
 
-**なぜこのパターンを使うのか:**
+状態遷移をどう表現するか。これには4つの方法があります：
 
-| 従来の方法 | Pending Object Pattern |
-|-----------|----------------------|
-| `ringi.status = 'submitted'` で状態変更 | `DraftRingi` → `SubmittedRingi` で型が変わる |
-| 間違った状態遷移もコンパイル通る | 間違った遷移はコンパイルエラー |
-| 例: `ApprovedRingi.submit()` が呼べてしまう | `ApprovedRingi` に `submit()` メソッドがない |
+| 方法 | 概要 | 採用 |
+|------|------|:----:|
+| **① 単一クラス + status フィールド** | `ringi.status = 'submitted'` で状態変更 | ❌ |
+| **② State Machine ライブラリ** | XState等で状態遷移を定義 | ❌ |
+| **③ Event Sourcing** | イベントの列として状態を表現 | ❌ |
+| **④ Pending Object Pattern** | 状態ごとに別クラス（`DraftRingi` → `SubmittedRingi`） | ✅ |
 
-**なぜ他のアプローチではないのか:**
+---
 
-| アプローチ | 問題 |
-|-----------|------|
-| 1つのクラスで全状態を管理 | 無効な状態遷移を防げない |
-| enum + switch | 新しい状態追加時に全switchを修正 |
-| State パターン（GoF） | 本パターンとほぼ同じだが、命名が分かりにくい |
+#### ❌ 案① 単一クラス + status フィールドを採用しなかった理由
+
+```typescript
+// 単一クラス方式
+class Ringi {
+  status: 'draft' | 'submitted' | 'approved' | 'rejected';
+  submittedAt?: Date;
+  approvedAt?: Date;
+  approvedBy?: EmployeeId;
+  rejectedAt?: Date;
+  rejectedReason?: string;
+  
+  submit() {
+    if (this.status !== 'draft') throw new Error('Invalid state');
+    this.status = 'submitted';
+    this.submittedAt = new Date();
+  }
+  
+  approve(approver: EmployeeId) {
+    if (this.status !== 'submitted') throw new Error('Invalid state');
+    this.status = 'approved';
+    this.approvedAt = new Date();
+    this.approvedBy = approver;
+  }
+}
+```
+
+**問題1: 不正な状態がコンパイルを通る**
+
+```typescript
+// ❌ 型システムが守ってくれない
+const ringi = new Ringi();
+ringi.status = 'approved';
+ringi.approvedAt = undefined;  // 承認済みなのに approvedAt がない！
+// → コンパイルエラーにならない。実行時に初めて気づく
+```
+
+**問題2: nullable 地獄**
+
+```typescript
+// ❌ 「この状態ではnullのはず」を全部覚えていないといけない
+if (ringi.status === 'approved') {
+  console.log(ringi.approvedAt!);  // ! が必要。本当に存在する？
+  console.log(ringi.approvedBy!);  // ! が必要。本当に存在する？
+  console.log(ringi.rejectedReason);  // これはnullのはず...たぶん...
+}
+```
+
+**問題3: switchの増殖**
+
+```typescript
+// ❌ 状態が増えるたびに全switchを修正
+function getRingiLabel(ringi: Ringi): string {
+  switch (ringi.status) {
+    case 'draft': return '下書き';
+    case 'submitted': return '申請中';
+    case 'approved': return '承認済';
+    case 'rejected': return '却下';
+    // 新しい状態 'pending_resubmit' を追加 → このswitch忘れて本番でクラッシュ
+  }
+}
+```
+
+**出典: bloc library (Flutter) の公式ドキュメント**
+> "Concrete Class and Status Enum: Not Type Safe. Possible to emit a malformed state, leading to bugs."
+
+---
+
+#### ❌ 案② State Machine ライブラリ（XState等）を採用しなかった理由
+
+```typescript
+// XState での状態遷移定義
+const ringiMachine = createMachine({
+  id: 'ringi',
+  initial: 'draft',
+  states: {
+    draft: {
+      on: { SUBMIT: 'submitted' }
+    },
+    submitted: {
+      on: { APPROVE: 'approved', REJECT: 'rejected' }
+    },
+    approved: { type: 'final' },
+    rejected: { type: 'final' }
+  }
+});
+```
+
+**問題1: 学習コストが高い**
+
+XState は強力だが、チーム全員が習得するには時間がかかる。
+
+**出典: Medium記事 "Don't use XState (at least, not with React)"**
+> "XState actively works against React's natural data flow, leading to confusing code."
+
+**問題2: 単純なケースには過剰**
+
+```typescript
+// ❌ 4状態の稟議フローにこれは大げさ
+const ringiMachine = createMachine({
+  // 50行の設定...
+});
+
+// ✅ 4つのクラスで十分
+class DraftRingi { }
+class SubmittedRingi { }
+class ApprovedRingi { }
+class RejectedRingi { }
+```
+
+**出典: GitHub Discussion "Need suggestions on migrating away from XState"**
+> "XState is way too sophisticated for our relatively simple customer onboarding application. The complexity is not justified."
+
+**問題3: デバッグが複雑**
+
+状態遷移図は美しいが、実際にどのイベントでどう遷移したかを追跡するのが難しい。
+
+**いつXStateを検討すべきか:**
+- 状態が10個以上ある
+- 状態遷移が複雑な分岐を持つ（条件付き遷移、ガード条件多数）
+- UIの状態管理（loading, error, success, retrying, ...）
+
+---
+
+#### ❌ 案③ Event Sourcing を採用しなかった理由
+
+```typescript
+// Event Sourcing 方式
+interface RingiEvent {
+  type: 'Created' | 'Submitted' | 'Approved' | 'Rejected';
+  timestamp: Date;
+  payload: unknown;
+}
+
+class Ringi {
+  private events: RingiEvent[] = [];
+  
+  submit() {
+    this.events.push({ type: 'Submitted', timestamp: new Date(), payload: {} });
+  }
+  
+  // 現在の状態は events を再生して計算
+  get status(): string {
+    return this.events.reduce((state, event) => {
+      switch (event.type) {
+        case 'Submitted': return 'submitted';
+        case 'Approved': return 'approved';
+        // ...
+      }
+    }, 'draft');
+  }
+}
+```
+
+**問題1: 「本で読んだら完璧に見えた。本番は悪夢だった」**
+
+**出典: Medium記事 "Event Sourcing Looked Perfect in the Book. Production Was a Nightmare."**
+> "Initial appeal of immutable events, audit trails, and CQRS quickly dissolved into distributed debugging hell."
+
+**問題2: Eventual Consistency バグ**
+
+```typescript
+// ❌ よくあるバグ：注文直後に確認画面で「注文がありません」
+// 理由：Read Model が Event Store に追いついていない
+
+async function submitOrder(order: Order) {
+  await eventStore.append(new OrderSubmittedEvent(order));
+  // ↑ イベント保存完了
+  
+  // ユーザーをリダイレクト
+  redirect('/orders/' + order.id);
+  // ↓ しかし Read Model はまだ更新されていない！
+}
+```
+
+**問題3: デバッグが考古学になる**
+
+「なぜこの稟議が却下されたか」を調べるために、イベント100万件を再生することになる。
+
+**問題4: スキーマ変更が永遠に残る**
+
+イベントは不変。フィールドを追加したら、過去イベントとの互換性コードが永遠に必要。
+
+```typescript
+// ❌ 2年前のイベントとの互換性コード
+function handleSubmittedEvent(event: SubmittedEvent) {
+  // v1: applicantId が string だった
+  // v2: applicantId を EmployeeId に変更
+  // v3: applicantId を廃止、applicant オブジェクトに変更
+  const applicant = event.version === 1 
+    ? EmployeeId.fromString(event.applicantId as string)
+    : event.version === 2
+    ? event.applicantId
+    : event.applicant.id;
+  // このコードは永遠に消せない
+}
+```
+
+**問題5: インフラコストが4倍**
+
+Event Store + 複数 Read Model + Message Queue = 通常アーキテクチャの4倍のコスト。
+
+**いつ Event Sourcing を検討すべきか:**
+- 監査ログが法的要件として必須
+- 「任意の過去時点の状態を再現」が必要
+- 金融・医療など、変更履歴の完全性が最重要
+
+---
+
+#### ✅ 案④ Pending Object Pattern を採用した理由
+
+```typescript
+class DraftRingi {
+  constructor(readonly id: RingiId, readonly data: RingiData) {}
+  
+  async submit(repository: RingiRepository): Promise<SubmittedRingi> {
+    const submitted = new SubmittedRingi(this.id, this.data, new Date());
+    await repository.save(submitted);
+    return submitted;
+  }
+  
+  // approve() メソッドは存在しない！
+  // → コンパイルエラーで不正な遷移を防ぐ
+}
+
+class SubmittedRingi {
+  constructor(
+    readonly id: RingiId,
+    readonly data: RingiData,
+    readonly submittedAt: Date  // 必須！nullにならない
+  ) {}
+  
+  async approve(repository: RingiRepository, approver: Employee): Promise<ApprovedRingi> {
+    // ...
+  }
+  
+  // submit() メソッドは存在しない！
+}
+
+class ApprovedRingi {
+  constructor(
+    readonly id: RingiId,
+    readonly data: RingiData,
+    readonly submittedAt: Date,
+    readonly approvedAt: Date,      // 必須！
+    readonly approvedBy: EmployeeId // 必須！
+  ) {}
+  
+  // submit() も approve() も存在しない！
+}
+```
+
+| メリット | 説明 |
+|---------|------|
+| **コンパイル時に不正遷移を検出** | `DraftRingi` に `approve()` がないのでコンパイルエラー |
+| **nullable がない** | `ApprovedRingi.approvedAt` は必須。`?` も `!` も不要 |
+| **各状態が独立してテスト可能** | `DraftRingi` のテストと `SubmittedRingi` のテストを分離 |
+| **Event Sourcing の複雑さなし** | インフラは通常のDB、追加コストなし |
+
+**唯一のデメリット: クラス数が増える**
+
+状態が5つなら5クラス。これは「状態遷移の複雑さを明示的にした」結果であり、複雑さ自体は元からあったものです。
+
+**「なぜ Pending という名前か」:**
+`DraftRingi` は「まだ申請されていない＝保留中（Pending）の稟議」を表します。`submit()` を呼ぶと `SubmittedRingi` になる＝「保留」が解除される、というイメージです。
+
+---
+
+### 状態数が増えたらどうするか
+
+| 状態数 | 推奨アプローチ |
+|--------|---------------|
+| 2-4 | Pending Object Pattern（本スキル） |
+| 5-7 | Pending Object Pattern、または State パターン（GoF）を検討 |
+| 8以上 | State Machine ライブラリ（XState等）を検討 |
+
+8状態を超えたら、クラス数の管理が大変になるので、専用ライブラリの学習コストを払う価値があります
 
 ---
 
@@ -500,40 +772,292 @@ user.setName("田中");
 saveToDatabase(user);  // 💥 エラーまたは不正なデータ
 ```
 
-### 解決: コンストラクタで全て受け取る
+### なぜ完全コンストラクタなのか — 5つの代替案との比較
+
+オブジェクト生成には5つの方法があります：
+
+| 方法 | 概要 | 採用 |
+|------|------|:----:|
+| **① Setter注入** | `new User()` → `user.setName(...)` | ❌ |
+| **② Builder パターン** | `UserBuilder().name(...).email(...).build()` | ❌ |
+| **③ Factory Class** | `UserFactory.create(data)` | ❌ |
+| **④ Two-phase initialization** | `new User()` → `user.init(data)` | ❌ |
+| **⑤ 完全コンストラクタ + Static Factory** | `new User(id, name, email)` または `User.create(data)` | ✅ |
+
+---
+
+#### ❌ 案① Setter注入を採用しなかった理由
 
 ```typescript
-// ✅ 完全コンストラクタ: 作った時点で完全
 class User {
-  constructor(
+  id?: UserId;
+  name?: UserName;
+  email?: Email;
+  
+  setId(id: UserId) { this.id = id; }
+  setName(name: UserName) { this.name = name; }
+  setEmail(email: Email) { this.email = email; }
+}
+```
+
+**問題1: 不完全なオブジェクトが存在できる**
+
+```typescript
+const user = new User();
+user.setName(UserName.of("田中"));
+// user.id = undefined, user.email = undefined
+saveToDatabase(user);  // 💥 実行時エラー
+```
+
+**問題2: 「設定済みか」を常に考える必要がある**
+
+```typescript
+function sendWelcomeEmail(user: User) {
+  // email は設定されている？ id は？ 確認が必要...
+  if (!user.email) throw new Error('Email not set');
+  if (!user.id) throw new Error('ID not set');
+  // やっと処理できる
+}
+```
+
+---
+
+#### ❌ 案② Builder パターンを採用しなかった理由
+
+```typescript
+class UserBuilder {
+  private id?: UserId;
+  private name?: UserName;
+  private email?: Email;
+  
+  withId(id: UserId) { this.id = id; return this; }
+  withName(name: UserName) { this.name = name; return this; }
+  withEmail(email: Email) { this.email = email; return this; }
+  
+  build(): User {
+    return new User(this.id!, this.name!, this.email!);  // ! で強制
+  }
+}
+```
+
+**問題1: `build()` を呼ぶまで不完全**
+
+```typescript
+const builder = new UserBuilder().withName(UserName.of("田中"));
+// builder は不完全な状態。build() を呼ぶまで分からない
+```
+
+**問題2: 必須項目を忘れてもコンパイル通る**
+
+```typescript
+const user = new UserBuilder()
+  .withName(UserName.of("田中"))
+  // id と email を忘れた！
+  .build();  // コンパイルエラーにならない。実行時に💥
+```
+
+**問題3: 「型安全なBuilder」は作れるが複雑**
+
+型安全なBuilderを作ることは可能ですが、TypeScriptでは非常に複雑になります：
+
+```typescript
+// 型安全なBuilder（複雑すぎる例）
+type BuilderState = { id: boolean; name: boolean; email: boolean };
+class UserBuilder<S extends BuilderState> {
+  // 複雑な型定義が続く...
+}
+```
+
+**Builderを許容する場合:** 引数が10個以上あり、多くがオプショナルの場合は Builder の方が読みやすいこともあります。ただし、それは「引数が多すぎる」というシグナルかもしれません。
+
+---
+
+#### ❌ 案③ Factory Class を採用しなかった理由
+
+```typescript
+class UserFactory {
+  static create(data: UserData): User {
+    // バリデーションロジック
+    if (!data.email.includes('@')) throw new Error('Invalid email');
+    
+    return new User(
+      UserId.generate(),
+      UserName.of(data.name),
+      Email.of(data.email)
+    );
+  }
+}
+```
+
+**問題1: ビジネスルールが分散する**
+
+```typescript
+// ❌ User のルールがどこにある？
+class User {
+  // 一部のルールがここに...
+}
+
+class UserFactory {
+  // 一部のルールがここに...
+}
+
+class UserValidator {
+  // さらに別のルールがここに...
+}
+
+// 「User のビジネスルール全部見せて」→ 3ファイル開く必要
+```
+
+**問題2: Factory が「神クラス」になりがち**
+
+```typescript
+class UserFactory {
+  static create(data: UserData): User { }
+  static createFromOAuth(profile: OAuthProfile): User { }
+  static createAdmin(data: AdminData): User { }
+  static createGuest(): User { }
+  static createFromCsv(row: string[]): User { }
+  // どんどん膨らむ...
+}
+```
+
+**Factory Class を許容する場合:**
+- 複数の Aggregate を協調して生成する必要がある場合
+- 外部リソース（ID生成サービス等）が必要で、DIコンテナで管理したい場合
+
+---
+
+#### ❌ 案④ Two-phase initialization を採用しなかった理由
+
+```typescript
+class User {
+  private id?: UserId;
+  private name?: UserName;
+  private email?: Email;
+  private initialized = false;
+  
+  constructor() {}  // 空のコンストラクタ
+  
+  init(data: UserData) {
+    if (this.initialized) throw new Error('Already initialized');
+    this.id = UserId.generate();
+    this.name = UserName.of(data.name);
+    this.email = Email.of(data.email);
+    this.initialized = true;
+  }
+  
+  getName(): UserName {
+    if (!this.initialized) throw new Error('Not initialized');
+    return this.name!;
+  }
+}
+```
+
+**問題1: 初期化忘れ**
+
+```typescript
+const user = new User();
+// init() を呼び忘れた！
+user.getName();  // 💥 実行時エラー
+```
+
+**問題2: 全メソッドでチェックが必要**
+
+```typescript
+// ❌ 全メソッドに initialized チェックが入る
+getName(): UserName {
+  if (!this.initialized) throw new Error('Not initialized');
+  return this.name!;
+}
+
+getEmail(): Email {
+  if (!this.initialized) throw new Error('Not initialized');
+  return this.email!;
+}
+// コピペ地獄
+```
+
+---
+
+#### ✅ 案⑤ 完全コンストラクタ + Static Factory を採用した理由
+
+```typescript
+class User {
+  private constructor(
     readonly id: UserId,
     readonly name: UserName,
     readonly email: Email
   ) {}
+  
+  // 単純な生成
+  static create(data: ValidatedUserData): User {
+    return new User(
+      UserId.generate(),
+      UserName.of(data.name),
+      Email.of(data.email)
+    );
+  }
+  
+  // バリデーション付き生成（失敗する可能性がある）
+  static createFromInput(
+    input: UnvalidatedUserInput
+  ): Result<User, ValidationError> {
+    const validation = new UserInputValidation(input).execute();
+    if (!validation.ok) return validation;
+    
+    return Result.ok(User.create(validation.value));
+  }
 }
-
-// 必要な値が全てないと作れない
-const user = new User(
-  UserId.generate(),
-  UserName.of("田中"),
-  Email.of("tanaka@example.com")
-);
 ```
 
-**なぜ完全コンストラクタを使うのか:**
+| メリット | 説明 |
+|---------|------|
+| **不完全なオブジェクトが存在しない** | コンストラクタで全フィールド必須 |
+| **コンパイル時にチェック** | 引数忘れはコンパイルエラー |
+| **ビジネスルールが1箇所** | User のルールは User クラスにある |
+| **失敗する生成を型で表現** | `createFromInput` は `Result` を返す |
 
-| 観点 | Setter注入 | 完全コンストラクタ |
-|------|-----------|-----------------|
-| 不完全なオブジェクト | 存在しうる | 存在しない |
-| 必須項目の確認 | 実行時にチェック | コンパイル時にチェック |
-| 「この項目は設定済み？」 | 常に考える必要がある | 考える必要がない |
+**private constructor + static factory の組み合わせ:**
 
-**なぜBuilderパターンではないのか:**
+```typescript
+// ❌ public constructor だと、バリデーションをスキップできる
+const user = new User(id, name, email);  // 誰でも呼べる
 
-| アプローチ | 問題 |
-|-----------|------|
-| Builderパターン | `build()` を呼ぶまで不完全な状態。必須項目を忘れても `build()` できてしまう実装が多い |
-| 完全コンストラクタ | コンストラクタの引数に全て渡さないとコンパイルエラー |
+// ✅ private constructor + static factory
+class User {
+  private constructor(...) {}  // 外から呼べない
+  
+  static create(data: ValidatedData): User {
+    // ここを通らないと User は作れない
+    return new User(...);
+  }
+}
+```
+
+**完全コンストラクタの唯一のデメリット: 引数が多くなる**
+
+```typescript
+// 引数が多い場合
+new User(id, name, email, phone, address, role, createdAt, ...);
+```
+
+これには2つの対処法があります：
+
+1. **オブジェクトにまとめる**
+```typescript
+new User({
+  id,
+  name,
+  email,
+  phone,
+  address,
+  role,
+  createdAt,
+});
+```
+
+2. **クラスを分割する（推奨）**
+引数が多いのは「責務が多すぎる」サインかもしれません
 
 ---
 
@@ -548,33 +1072,274 @@ const user = new User(
 | **External Resource** | 外部リソースにアクセス | Repository, API Client | メソッド引数で受け取る |
 | **Non-deterministic** | 実行ごとに結果が変わる | Clock（現在時刻）, Random | メソッド引数で受け取る |
 
-**なぜメソッド引数で受け取るのか（External Resource / Non-deterministic）:**
+### なぜ「メソッド引数で受け取る」なのか — 4つの代替案との比較
 
+External Resource（Repository等）をどうやってクラスに渡すか。これには4つの方法があります：
+
+| 方法 | 概要 | 採用 |
+|------|------|:----:|
+| **① DIコンテナ（コンストラクタ注入）** | NestJS/Spring方式。コンテナがnew時に自動注入 | ❌ |
+| **② Factoryパターン** | `RingiFactory.create(data, repository)` で生成時に渡す | ❌ |
+| **③ Service Locator** | `ServiceLocator.get(RingiRepository)` でグローバルに取得 | ❌ |
+| **④ メソッド引数** | `draft.submit(repository)` で使う時に渡す | ✅ |
+
+---
+
+#### ❌ 案① DIコンテナ（コンストラクタ注入）を採用しなかった理由
+
+**NestJS や Spring で標準的なアプローチ:**
 ```typescript
-// ❌ コンストラクタで受け取ると、テスト時に差し替えが難しい
-class DraftRingi {
-  constructor(private repository: RingiRepository) {}  // 固定されてしまう
+// NestJS スタイル
+@Injectable()
+class RingiService {
+  constructor(private readonly repository: RingiRepository) {}
   
-  async submit(): Promise<SubmittedRingi> {
+  async submit(data: RingiData): Promise<SubmittedRingi> {
+    const draft = new DraftRingi(data);
+    await this.repository.save(draft);
     // ...
-    await this.repository.save(submitted);
   }
 }
-
-// ✅ メソッド引数で受け取ると、テスト時に偽物を渡せる
-class DraftRingi {
-  async submit(repository: RingiRepository): Promise<SubmittedRingi> {
-    // ...
-    await repository.save(submitted);
-  }
-}
-
-// テスト時
-const fakeRepository = new InMemoryRingiRepository();  // 偽物
-await draft.submit(fakeRepository);
 ```
 
-**なぜNon-deterministicも引数で受け取るのか:**
+**問題1: ドメインオブジェクトはDIコンテナの外で生まれる**
+
+`DraftRingi` は `new DraftRingi(data)` で生成されます。DIコンテナは `@Injectable()` が付いたクラスしか管理しません。
+
+```typescript
+// ❌ これはできない — DraftRingi は手動で new する
+const draft = container.resolve(DraftRingi);  // DraftRingi は Entity、DIで管理しない
+```
+
+DIコンテナは「サービス層」のオブジェクト（`RingiService`）を管理するもので、「ドメインオブジェクト」（`DraftRingi`）は管理対象外です。
+
+**問題2: Anemic Domain Model（貧血ドメインモデル）を誘発する**
+
+DIコンテナを使うと、ロジックが「サービス」に流出しがちです：
+
+```typescript
+// ❌ DIコンテナ方式 → ロジックがサービスに集中
+class RingiService {
+  constructor(private readonly repository: RingiRepository) {}
+  
+  async submit(draft: DraftRingi): Promise<SubmittedRingi> {
+    // ビジネスロジックがここに書かれる
+    if (draft.amount.isGreaterThan(MAX)) throw new Error('上限超過');
+    const submitted = new SubmittedRingi(draft.id, draft.data, new Date());
+    await this.repository.save(submitted);
+    return submitted;
+  }
+}
+
+// DraftRingi は単なるデータ入れ物になる（貧血）
+class DraftRingi {
+  constructor(readonly id: RingiId, readonly data: RingiData) {}
+  // メソッドがない！
+}
+```
+
+本スキルが目指すのは「ドメインオブジェクト自身がロジックを持つ」Rich Domain Model です：
+
+```typescript
+// ✅ メソッド引数方式 → ロジックがドメインオブジェクトに
+class DraftRingi {
+  async submit(repository: RingiRepository, clock: Clock): Promise<SubmittedRingi> {
+    // ビジネスロジックがここにある
+    const submitted = new SubmittedRingi(this.id, this.data, clock.now());
+    await repository.save(submitted);
+    return submitted;
+  }
+}
+```
+
+**問題3: テストで「使わない依存」も全部渡す必要がある**
+
+```typescript
+// ❌ DIコンテナ方式：10メソッドあるサービス
+class OrderService {
+  constructor(
+    private readonly orderRepository: OrderRepository,
+    private readonly paymentGateway: PaymentGateway,
+    private readonly emailService: EmailService,
+    private readonly inventoryApi: InventoryApi,
+    private readonly auditLogger: AuditLogger,
+  ) {}
+  
+  async calculateTotal(order: Order): Money { /* repository使わない */ }
+  async validateItems(order: Order): boolean { /* repository使わない */ }
+  // ...
+}
+
+// テスト：calculateTotal だけテストしたいのに5つ全部モックする
+const service = new OrderService(
+  mockOrderRepository,    // 使わないのにモック必要
+  mockPaymentGateway,     // 使わないのにモック必要
+  mockEmailService,       // 使わないのにモック必要
+  mockInventoryApi,       // 使わないのにモック必要
+  mockAuditLogger,        // 使わないのにモック必要
+);
+service.calculateTotal(order);  // 結局1つも使わなかった
+```
+
+メソッド引数なら、そのメソッドが使うものだけ渡せばいい：
+
+```typescript
+// ✅ メソッド引数方式：必要なものだけ
+order.calculateTotal();  // 引数なし、モック不要
+order.submit(repository, clock);  // 使うものだけ
+```
+
+---
+
+#### ❌ 案② Factoryパターンを採用しなかった理由
+
+```typescript
+// Factory パターン
+class RingiFactory {
+  constructor(private readonly repository: RingiRepository) {}
+  
+  async createAndSubmit(data: RingiData): Promise<SubmittedRingi> {
+    const draft = new DraftRingi(data);
+    // ...submit ロジック...
+    await this.repository.save(submitted);
+    return submitted;
+  }
+}
+```
+
+**問題1: ビジネスルールが分散する**
+
+「稟議の上限チェック」はどこにある？`DraftRingi`？`RingiFactory`？両方見ないと分からない。
+
+```typescript
+// ❌ 知識が分散
+class DraftRingi {
+  // ここにも一部のルールが...
+}
+
+class RingiFactory {
+  // ここにも別のルールが...
+}
+
+// 「稟議のビジネスルール全部見せて」→ 2ファイル開く必要
+```
+
+**問題2: Factoryが「神クラス」になりがち**
+
+```typescript
+// ❌ 時間が経つと...
+class RingiFactory {
+  createDraft(data) { }
+  createFromTemplate(template) { }
+  createCopy(original) { }
+  createAndSubmit(data) { }
+  createForBulkImport(csv) { }
+  // どんどん膨らむ
+}
+```
+
+---
+
+#### ❌ 案③ Service Locatorを採用しなかった理由
+
+```typescript
+// Service Locator パターン
+class DraftRingi {
+  async submit(): Promise<SubmittedRingi> {
+    const repository = ServiceLocator.get(RingiRepository);  // グローバルに取得
+    const clock = ServiceLocator.get(Clock);
+    // ...
+  }
+}
+```
+
+**問題1: 依存が隠れる**
+
+メソッドシグネチャを見ても、何に依存しているか分からない：
+
+```typescript
+// ❌ シグネチャから依存が見えない
+async submit(): Promise<SubmittedRingi>  // 中で何使ってる？
+
+// ✅ シグネチャに依存が明示される
+async submit(repository: RingiRepository, clock: Clock): Promise<SubmittedRingi>
+```
+
+**問題2: テストでグローバル状態を操作する必要がある**
+
+```typescript
+// ❌ テスト前にグローバル状態をセットアップ
+beforeEach(() => {
+  ServiceLocator.register(RingiRepository, new InMemoryRingiRepository());
+  ServiceLocator.register(Clock, new FixedClock(...));
+});
+
+afterEach(() => {
+  ServiceLocator.reset();  // 忘れると次のテストに影響
+});
+```
+
+**問題3: 並列テストで壊れる**
+
+グローバル状態を共有するため、テストを並列実行すると競合が発生します。
+
+---
+
+#### ✅ 案④ メソッド引数を採用した理由
+
+```typescript
+class DraftRingi {
+  async submit(repository: RingiRepository, clock: Clock): Promise<SubmittedRingi> {
+    const submitted = new SubmittedRingi(this.id, this.data, clock.now());
+    await repository.save(submitted);
+    return submitted;
+  }
+}
+```
+
+| メリット | 説明 |
+|---------|------|
+| **依存が明示的** | シグネチャを見れば何が必要か分かる |
+| **テストが簡単** | 使うものだけモックすればいい |
+| **Rich Domain Model** | ロジックがドメインオブジェクト自身にある |
+| **並列テスト可能** | グローバル状態がないので競合しない |
+
+**唯一のデメリット: 引数が増える**
+
+```typescript
+// 引数が多くなることがある
+await draft.submit(repository, clock, notificationService, auditLogger);
+```
+
+これは「このメソッドが多くのことをやりすぎている」というシグナルです。責務を分割すべきサインとして受け入れます。
+
+---
+
+### なぜ4分類なのか — 3分類や5分類ではなく
+
+| 分類数 | 問題 |
+|--------|------|
+| **2分類**（Pure / Impure） | 「設定値に依存」と「DBに依存」の区別がつかない |
+| **3分類**（Pure / Config / External） | 「時刻」「乱数」が External に混ざる。テスト方法が違うのに同じ扱いになる |
+| **4分類**（本スキル） | 生成方法とテスト方法が完全に対応する |
+| **5分類以上** | 複雑すぎて判断に時間がかかる |
+
+**判断フロー:**
+```
+この依存は...
+├─ 外部リソース（DB, HTTP, File）にアクセスする？
+│   └─ YES → External Resource → メソッド引数
+├─ 時刻や乱数に依存する？
+│   └─ YES → Non-deterministic → メソッド引数
+├─ 設定値（税率、上限額等）が必要？
+│   └─ YES → Configured Logic → Config経由でコンストラクタ内生成
+└─ 上記すべてNO？
+    └─ YES → Pure Logic → コンストラクタ内で直接 new
+```
+
+---
+
+### Clock の扱い — なぜメソッド引数なのか
 
 ```typescript
 // ❌ 現在時刻を直接取得すると、テスト結果が毎回変わる
@@ -598,6 +1363,8 @@ class FixedClock implements Clock {
 class DraftRingi {
   async submit(repository: RingiRepository, clock: Clock): Promise<SubmittedRingi> {
     const submitted = new SubmittedRingi(this.id, clock.now());
+    await repository.save(submitted);
+    return submitted;
   }
 }
 
@@ -605,6 +1372,16 @@ class DraftRingi {
 const fixedClock = new FixedClock(new Date('2024-01-15T10:00:00Z'));
 await draft.submit(repository, fixedClock);
 // submitted.submittedAt が 2024-01-15T10:00:00Z であることを検証できる
+```
+
+**なぜ `Date.now()` をモックしないのか:**
+
+```typescript
+// ❌ グローバルモック — 他のテストに影響する可能性
+jest.spyOn(Date, 'now').mockReturnValue(1234567890);
+
+// ✅ 引数で渡す — 影響範囲が明確
+await draft.submit(repository, new FixedClock(...));
 ```
 
 ---
@@ -774,99 +1551,307 @@ type Result<T, E> =
   | { ok: false; error: E }; // 失敗時: ok が false で error にエラー情報
 ```
 
-**使用例:**
+### なぜ Result 型なのか — 5つの代替案との比較
 
-```typescript
-function divide(a: number, b: number): Result<number, string> {
-  if (b === 0) {
-    return { ok: false, error: 'ゼロで割ることはできません' };
-  }
-  return { ok: true, value: a / b };
-}
+エラー処理には5つの方法があります：
 
-// 使う側
-const result = divide(10, 2);
-if (result.ok) {
-  console.log(result.value);  // 5
-} else {
-  console.log(result.error);  // エラーメッセージ
-}
-```
+| 方法 | 概要 | 採用 |
+|------|------|:----:|
+| **① 例外（throw/catch）** | `throw new Error()` で中断 | △ 条件付き |
+| **② null/undefined** | 失敗時に `null` を返す | ❌ |
+| **③ Go スタイル（タプル）** | `[value, error]` を返す | ❌ |
+| **④ Either/Maybe モナド** | 関数型プログラミング由来 | ❌ |
+| **⑤ Result 型** | `{ ok, value/error }` を返す | ✅ |
 
 ---
 
-## 4.2 なぜ例外ではなく Result 型か
-
-### 問題: 例外の型安全性欠如
+#### △ 案① 例外（throw/catch）— 条件付きで採用
 
 ```typescript
-// ❌ 例外ベース: どこで何が投げられるか分からない
+// 例外方式
 async function submit(data: RingiData): Promise<SubmittedRingi> {
-  // この中で ValidationError? AmountExceededError? DatabaseError?
-  // 型を見ても分からない
+  if (data.amount > MAX) throw new AmountExceededError();
+  // ...
 }
 
 try {
   await submit(data);
 } catch (e) {
-  // e は any 型。何のエラーか分からない
-  if (e instanceof ValidationError) { ... }
-  else if (e instanceof AmountExceededError) { ... }
-  else { ... }
+  // e は unknown 型
 }
 ```
 
-### 解決: Result 型
+**問題1: 型シグネチャにエラーが表れない**
 
 ```typescript
-// ✅ Result型: エラーの型が明示的
-function create(data: ValidatedInput): Result<DraftRingi, AmountExceededError> {
-  if (data.amount.isGreaterThan(MAX)) {
-    return { ok: false, error: new AmountExceededError(data.amount, MAX) };
-  }
-  return { ok: true, value: new DraftRingi(data) };
-}
-
-// 使う側: エラー処理を強制される
-const result = create(data);
-if (!result.ok) {
-  // result.error は AmountExceededError 型と分かっている
-  console.log(`金額 ${result.error.actual} は上限 ${result.error.max} を超えています`);
-  return;
-}
-// result.value は DraftRingi 型
+// ❌ 何が投げられるか分からない
+async function submit(data: RingiData): Promise<SubmittedRingi>
+// ↑ この関数が ValidationError? AmountExceededError? DatabaseError? 
+// 型を見ても分からない。実装を読まないと分からない。
 ```
 
-**比較:**
+**問題2: catch 忘れても動く**
 
-| 観点 | 例外 | Result型 |
-|------|------|---------|
-| エラーの型 | 不明（any） | 明示的 |
-| エラー処理の強制 | なし（忘れても動く） | あり（ifで分岐必須） |
-| 複数種類のエラー | catchで型チェック | Union型で表現 |
+```typescript
+// ❌ catch を忘れても TypeScript は警告しない
+await submit(data);
+// ↑ 例外が投げられる可能性があるのに、catch がない
+// コンパイルは通る。本番で初めてクラッシュ。
+```
+
+**問題3: catch の e は unknown 型**
+
+```typescript
+try {
+  await submit(data);
+} catch (e) {
+  // e は unknown 型。何のエラーか分からない
+  if (e instanceof ValidationError) { ... }
+  else if (e instanceof AmountExceededError) { ... }
+  else { ... }  // これ全部覚えていられる？
+}
+```
+
+**出典: Medium記事 "How Rust Made Me Ditch Go's Error Hell"**
+> "The Result type makes errors visible in the type signature. You cannot ignore them."
+
+**例外を許容する場合（InfrastructureError）:**
+本スキルでは、**ユーザーが対処できないエラー**は例外で throw します：
+
+```typescript
+// ✅ InfrastructureError は例外OK
+class PostgresRingiRepository {
+  async save(ringi: Ringi): Promise<void> {
+    try {
+      await this.db.execute(...);
+    } catch (e) {
+      // DB接続失敗、ネットワークエラーなど
+      throw new InfrastructureError('Database error', e);
+    }
+  }
+}
+```
+
+理由: DB障害でユーザーにできることは「しばらく待って再試行」だけ。Result で返しても意味がない。
 
 ---
 
-## 4.3 なぜ null を返すのではないのか
+#### ❌ 案② null/undefined を採用しなかった理由
 
 ```typescript
-// ❌ null を返す: エラーの理由が分からない
+// null 方式
 function findUser(id: string): User | null {
-  // null の理由は？存在しない？権限がない？DBエラー？
-  return null;
+  if (!exists) return null;
+  if (!hasPermission) return null;
+  return user;
+}
+```
+
+**問題1: エラーの理由が分からない**
+
+```typescript
+const user = findUser(id);
+if (user === null) {
+  // なぜ null？
+  // - ユーザーが存在しない？
+  // - 権限がない？
+  // - DB接続に失敗した？
+  // 分からない！
+}
+```
+
+**問題2: null チェック忘れ**
+
+```typescript
+// ❌ TypeScript の strictNullChecks を有効にしていても...
+const user = findUser(id);
+console.log(user.name);  // 💥 user が null かも
+
+// 毎回 null チェックが必要
+if (user) {
+  console.log(user.name);  // ようやく安全
+}
+```
+
+---
+
+#### ❌ 案③ Go スタイル（タプル）を採用しなかった理由
+
+```typescript
+// Go スタイル
+function findUser(id: string): [User | null, Error | null] {
+  if (!exists) return [null, new NotFoundError(id)];
+  return [user, null];
 }
 
-// ✅ Result型: エラーの理由が分かる
+const [user, err] = findUser(id);
+if (err) {
+  // エラー処理
+}
+```
+
+**問題1: 両方 null のケースを防げない**
+
+```typescript
+// ❌ 不正な状態が型として許容される
+return [null, null];  // どっちも null！コンパイル通る
+return [user, new Error()];  // 両方ある！コンパイル通る
+```
+
+**問題2: TypeScript の型推論と相性が悪い**
+
+```typescript
+const [user, err] = findUser(id);
+if (err) return;
+
+// ↓ この時点で user は null じゃないはずなのに...
+console.log(user.name);  // TypeScript: "user は null かもしれません"
+// 型が絞り込まれない
+```
+
+Result 型なら型が絞り込まれる：
+
+```typescript
+// ✅ Result 型
+const result = findUser(id);
+if (!result.ok) return;
+
+console.log(result.value.name);  // OK! value は User 型
+```
+
+---
+
+#### ❌ 案④ Either/Maybe モナドを採用しなかった理由
+
+```typescript
+// Either モナド（fp-ts 等）
+import { Either, left, right, chain } from 'fp-ts/Either';
+
+function findUser(id: string): Either<Error, User> {
+  if (!exists) return left(new NotFoundError(id));
+  return right(user);
+}
+
+// 使う側
+pipe(
+  findUser(id),
+  chain(validatePermission),
+  chain(loadProfile),
+  fold(
+    (error) => handleError(error),
+    (user) => showUser(user)
+  )
+);
+```
+
+**問題1: 学習コストが高すぎる**
+
+`pipe`, `chain`, `fold`, `map`, `flatMap`, `ap`, `sequenceT` ...
+
+チーム全員がこれを理解できる？新メンバーが入ってきたら？
+
+**問題2: 既存のエコシステムとの相性**
+
+```typescript
+// ❌ async/await と組み合わせが面倒
+async function submit(): Promise<Either<Error, Ringi>> {
+  // Either と Promise の組み合わせ = TaskEither
+  // さらに複雑に...
+}
+```
+
+**問題3: エラーメッセージが分かりにくい**
+
+fp-ts のエラーメッセージは TypeScript 初心者には暗号に見えます。
+
+**Either を許容する場合:**
+- チーム全員が関数型プログラミングに精通している
+- 既存コードベースが fp-ts を使っている
+
+---
+
+#### ✅ 案⑤ Result 型を採用した理由
+
+```typescript
+// Result 型
+type Result<T, E> = 
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
 function findUser(id: string): Result<User, NotFoundError | PermissionError> {
   if (!exists) return { ok: false, error: new NotFoundError(id) };
   if (!hasPermission) return { ok: false, error: new PermissionError(id) };
   return { ok: true, value: user };
 }
+
+// 使う側
+const result = findUser(id);
+if (!result.ok) {
+  // result.error は NotFoundError | PermissionError 型
+  console.log(result.error.message);
+  return;
+}
+// result.value は User 型
+console.log(result.value.name);
+```
+
+| メリット | 説明 |
+|---------|------|
+| **エラーが型に表れる** | `Result<User, NotFoundError>` で何が起きるか分かる |
+| **エラー処理を強制** | `if (!result.ok)` を書かないと value にアクセスできない |
+| **型が絞り込まれる** | `if (!result.ok) return;` の後、`result.value` は User 型 |
+| **学習コストが低い** | `if/else` が分かれば使える |
+
+---
+
+### Result 型の欠点と対処法
+
+**欠点1: 冗長になることがある**
+
+```typescript
+// ❌ 毎回 if チェック
+const result1 = step1();
+if (!result1.ok) return result1;
+
+const result2 = step2(result1.value);
+if (!result2.ok) return result2;
+
+const result3 = step3(result2.value);
+if (!result3.ok) return result3;
+// 繰り返し...
+```
+
+**対処: ヘルパー関数**
+
+```typescript
+// ✅ andThen でチェーン
+const finalResult = result1
+  .andThen(step2)
+  .andThen(step3);
+```
+
+**欠点2: async との組み合わせ**
+
+```typescript
+// ❌ Promise<Result<T, E>> の扱いが面倒
+const result = await asyncStep1();
+if (!result.ok) return result;
+// ...
+```
+
+**対処: AsyncResult ヘルパー**
+
+```typescript
+// ✅ AsyncResult
+const result = await AsyncResult
+  .from(asyncStep1())
+  .andThen(asyncStep2)
+  .andThen(asyncStep3);
 ```
 
 ---
 
-## 4.4 エラーの分類
+## 4.2 エラーの2分類
 
 | 分類 | 定義 | 処理方法 | 例 |
 |------|------|---------|-----|
@@ -874,8 +1859,23 @@ function findUser(id: string): Result<User, NotFoundError | PermissionError> {
 | **InfrastructureError** | 技術的な障害 | 例外でthrow | DB接続失敗、ネットワークエラー |
 
 **なぜ分けるか:**
-- **DomainError**: ユーザーが対処可能（入力を修正する等）
-- **InfrastructureError**: ユーザーには対処不可能（「しばらく待ってから再試行してください」としか言えない）
+
+| エラー種類 | ユーザーが対処可能？ | 例 |
+|-----------|:----------------:|-----|
+| DomainError | ✅ | 「金額を100万円以下に修正してください」 |
+| InfrastructureError | ❌ | 「しばらく待ってから再試行してください」 |
+
+DomainError は「こうすれば成功する」が分かるので、Result で返してユーザーに伝えます。
+InfrastructureError は「どうしようもない」ので、例外で上位に伝搬させてシステム全体で処理します。
+
+**判断フロー:**
+```
+このエラーは...
+├─ ユーザーが入力を修正すれば成功する？
+│   └─ YES → DomainError → Result 型
+└─ NO（システム障害、ネットワーク障害）
+    └─ InfrastructureError → 例外 throw
+```
 
 ---
 
@@ -1079,10 +2079,23 @@ console.log(range.start, range.end);  // 明確
 
 **Screaming Architecture**とは、「ディレクトリ構造を見れば何のシステムか分かる」設計です。
 
-### 問題: 何のシステムか分からない
+### なぜ Screaming Architecture なのか — 4つの代替案との比較
+
+ディレクトリ構造には4つの設計方法があります：
+
+| 方法 | 概要 | 採用 |
+|------|------|:----:|
+| **① 技術レイヤー分割** | `controllers/`, `services/`, `repositories/` | ❌ |
+| **② 機能ベース分割（Screaming）** | `catalog/`, `ordering/`, `payments/` | ✅ |
+| **③ Hexagonal Architecture** | `adapters/`, `ports/`, `domain/` | △ 条件付き |
+| **④ Clean Architecture（4層）** | `entities/`, `use-cases/`, `interface-adapters/`, `frameworks/` | ❌ |
+
+---
+
+#### ❌ 案① 技術レイヤー分割を採用しなかった理由
 
 ```
-❌ 技術レイヤーで分割
+技術レイヤー分割
 src/
 ├── controllers/     # コントローラー？何の？
 ├── services/        # サービス？何の？
@@ -1090,18 +2103,135 @@ src/
 └── entities/        # エンティティ？何の？
 ```
 
+**問題1: 何のシステムか分からない**
+
 このディレクトリ構造を見て、ECサイトなのか、社内システムなのか、SNSなのか分かりますか？
 
-### 解決: 機能/ドメインで分割
+**問題2: 1機能修正で5フォルダ開く**
+
+**出典: "6 Months with Feature-Based Folder Structure — Why I'm Not Going Back"**
+> "Editing one feature required opening 5+ folders. Structure became difficult for maintenance."
 
 ```
-✅ 何のシステムか一目で分かる（ECサイトだ！）
+「稟議機能を修正」するために開くフォルダ：
+1. controllers/RingiController.ts
+2. services/RingiService.ts
+3. repositories/RingiRepository.ts
+4. entities/Ringi.ts
+5. dto/RingiDto.ts
+6. validators/RingiValidator.ts
+→ 6ファイルが6箇所に散らばっている
+```
+
+**問題3: 機能削除で漏れが発生**
+
+```
+「稟議機能を削除」したとき：
+✅ controllers/RingiController.ts    削除した
+✅ services/RingiService.ts          削除した
+❌ repositories/RingiRepository.ts   忘れた！
+❌ entities/Ringi.ts                 忘れた！
+→ 死んだコードが残る
+```
+
+**問題4: オンボーディングが遅い**
+
+新メンバー：「稟議機能のコードどこですか？」
+回答：「えーと、controllers と services と repositories と entities と dto と validators を見て...」
+
+---
+
+#### △ 案③ Hexagonal Architecture — 条件付きで採用
+
+```
+Hexagonal（ポート＆アダプター）
+src/
+├── adapters/
+│   ├── web/
+│   ├── persistence/
+│   └── messaging/
+├── ports/
+│   ├── inbound/
+│   └── outbound/
+└── domain/
+```
+
+**利点:** 外部システムとの接点（アダプター）が明確に分離される。
+
+**問題: 小〜中規模には過剰**
+
+```
+「稟議機能を追加」するファイル数：
+- domain/ringi/Ringi.ts
+- domain/ringi/RingiService.ts
+- ports/inbound/RingiUseCase.ts
+- ports/outbound/RingiRepository.ts
+- adapters/web/RingiController.ts
+- adapters/persistence/PostgresRingiRepository.ts
+→ 6ファイル以上、3階層
+
+シンプルなCRUDアプリには重すぎる
+```
+
+**Hexagonal を許容する場合:**
+- 複数の入力チャネル（Web, CLI, Queue, gRPC）がある
+- 複数の永続化先（PostgreSQL, MongoDB, 外部API）がある
+- マイクロサービスで境界が重要
+
+---
+
+#### ❌ 案④ Clean Architecture（4層）を採用しなかった理由
+
+```
+Clean Architecture
+src/
+├── entities/           # Enterprise Business Rules
+├── use-cases/          # Application Business Rules
+├── interface-adapters/ # Controllers, Presenters, Gateways
+└── frameworks/         # Web, DB, External
+```
+
+**問題1: 過剰な層分け**
+
+「稟議を申請する」だけで4ファイル以上：
+
+```
+entities/Ringi.ts
+use-cases/SubmitRingiUseCase.ts
+interface-adapters/RingiController.ts
+interface-adapters/RingiPresenter.ts
+frameworks/web/ExpressRingiRouter.ts
+frameworks/persistence/PostgresRingiRepository.ts
+```
+
+**問題2: 「どの層に置くか」で延々と議論**
+
+「このロジックは Entity？UseCase？Adapter？」
+
+**Clean Architecture を許容する場合:**
+- 大規模エンタープライズシステム
+- 複数チームが同一コードベースで作業
+- フレームワーク乗り換えが予定されている
+
+---
+
+#### ✅ 案② Screaming Architecture を採用した理由
+
+```
+Screaming Architecture（機能ベース）
 src/
 ├── catalog/      # 商品カタログ
 ├── ordering/     # 注文管理
 ├── customers/    # 顧客管理
 └── payments/     # 決済
 ```
+
+| メリット | 説明 |
+|---------|------|
+| **何のシステムか一目で分かる** | ECサイトだ！稟議システムだ！ |
+| **1機能 = 1フォルダ** | 関連ファイルが1箇所にまとまる |
+| **削除が簡単** | フォルダごと削除すれば完了 |
+| **オンボーディングが速い** | 「稟議は `src/ringis/` を見て」 |
 
 **React/Next.js での適用例:**
 
@@ -1125,6 +2255,33 @@ src/
 └── checkout/
     └── ...
 ```
+
+---
+
+### Screaming Architecture の欠点と対処法
+
+**欠点1: 共通コードどこに置く？**
+
+```
+src/
+├── catalog/
+├── ordering/
+└── shared/     # 共通コード → ここが肥大化しがち
+```
+
+**対処:** `shared/` は「2つ以上の機能で使われることが確定したもの」だけ。最初から共通化しない。
+
+**欠点2: 機能間の依存が見えにくい**
+
+```typescript
+// ❌ catalog が ordering に依存していることに気づきにくい
+import { OrderItem } from '../ordering/OrderItem';
+```
+
+**対処:** インポート時に明示的な依存を意識。循環依存は禁止。
+
+**出典: "Layered Architecture vs Feature Folders"**
+> "While Layered Architecture is safe and predictable, it led to slower delivery and higher cognitive load. After six months, onboarding became painful."
 
 ---
 
@@ -1220,7 +2377,201 @@ tests/
 
 # Part 7: テスト戦略
 
-## 7.1 依存分類別のテスト方法
+## 7.1 なぜ InMemory 実装なのか — 4つの代替案との比較
+
+外部リソース（Repository等）のテストには4つの方法があります：
+
+| 方法 | 概要 | 採用 |
+|------|------|:----:|
+| **① Mock ライブラリ** | `jest.mock()`, `mockito` で振る舞いを定義 | ❌ |
+| **② Stub オブジェクト** | 固定値を返すだけの実装 | △ 限定的 |
+| **③ InMemory 実装** | メモリ上で動作する完全な実装 | ✅ |
+| **④ Test Containers** | Docker で本物のDBを起動 | △ 統合テスト用 |
+
+---
+
+#### ❌ 案① Mock ライブラリを採用しなかった理由
+
+```typescript
+// Mock ライブラリ方式
+test('稟議を申請できる', async () => {
+  const mockRepository = {
+    save: jest.fn().mockResolvedValue(undefined),
+    findById: jest.fn().mockResolvedValue(null),
+  };
+  
+  const draft = new DraftRingi(id, data);
+  await draft.submit(mockRepository, clock);
+  
+  expect(mockRepository.save).toHaveBeenCalledWith(/* ... */);
+});
+```
+
+**問題1: 実装の詳細に依存する**
+
+```typescript
+// ❌ リファクタリングするとテストが壊れる
+// Before: save を1回呼んでいた
+expect(mockRepository.save).toHaveBeenCalledTimes(1);
+
+// After: 内部でバッチ処理に変更 → save を2回呼ぶように
+// テストは失敗するが、ビジネスロジックは正しい
+```
+
+**問題2: モックの設定漏れ**
+
+```typescript
+// ❌ findById をモック忘れ
+const mockRepository = {
+  save: jest.fn(),
+  // findById: ... 忘れた！
+};
+
+// 実行すると undefined.then is not a function みたいなエラー
+```
+
+**問題3: モックが複雑になる**
+
+```typescript
+// ❌ 条件付きの返り値を設定
+mockRepository.findById
+  .mockResolvedValueOnce(ringi1)  // 1回目
+  .mockResolvedValueOnce(ringi2)  // 2回目
+  .mockResolvedValueOnce(null);   // 3回目
+// 順番を覚えていないといけない
+```
+
+---
+
+#### △ 案② Stub オブジェクト — 限定的に採用
+
+```typescript
+// Stub: 固定値を返すだけ
+class StubRingiRepository implements RingiRepository {
+  async save(ringi: Ringi): Promise<void> {
+    // 何もしない
+  }
+  
+  async findById(id: RingiId): Promise<Ringi | null> {
+    return null;  // 常に null
+  }
+}
+```
+
+**利点:** シンプル
+
+**問題: 柔軟性がない**
+
+```typescript
+// ❌ テストによって返り値を変えたい場合
+// → Stub を複数作る必要がある
+
+class StubReturnsRingi implements RingiRepository { ... }
+class StubReturnsNull implements RingiRepository { ... }
+class StubThrowsError implements RingiRepository { ... }
+// Stub が増殖する
+```
+
+**Stub を許容する場合:**
+- 成功ケースのみテストする場合
+- Gateway（外部API）のテストで「常に成功」「常に失敗」を切り替えるだけの場合
+
+---
+
+#### ✅ 案③ InMemory 実装を採用した理由
+
+```typescript
+// InMemory: 本物と同じ振る舞いをメモリ上で
+class InMemoryRingiRepository implements RingiRepository {
+  private storage = new Map<string, Ringi>();
+  
+  async save(ringi: Ringi): Promise<void> {
+    this.storage.set(ringi.id.value, ringi);
+  }
+  
+  async findById(id: RingiId): Promise<Ringi | null> {
+    return this.storage.get(id.value) ?? null;
+  }
+  
+  // テスト用ヘルパー
+  clear(): void {
+    this.storage.clear();
+  }
+  
+  count(): number {
+    return this.storage.size;
+  }
+}
+```
+
+| メリット | 説明 |
+|---------|------|
+| **本物と同じ振る舞い** | save したものを findById で取得できる |
+| **実装詳細に依存しない** | 内部でどう呼んでいるかは関係ない |
+| **柔軟** | テストデータを自由にセットアップできる |
+| **高速** | DBアクセスなし |
+
+```typescript
+// ✅ InMemory を使ったテスト
+test('稟議を申請できる', async () => {
+  const repository = new InMemoryRingiRepository();
+  const draft = new DraftRingi(id, data);
+  
+  const submitted = await draft.submit(repository, clock);
+  
+  // 実際に保存されたことを確認
+  const saved = await repository.findById(id);
+  expect(saved).not.toBeNull();
+  expect(saved.status).toBe('submitted');
+});
+```
+
+---
+
+#### △ 案④ Test Containers — 統合テスト用
+
+```typescript
+// Test Containers: Docker で本物のDBを起動
+import { PostgreSqlContainer } from 'testcontainers';
+
+let container: PostgreSqlContainer;
+let repository: PostgresRingiRepository;
+
+beforeAll(async () => {
+  container = await new PostgreSqlContainer().start();
+  repository = new PostgresRingiRepository(container.getConnectionUri());
+});
+
+afterAll(async () => {
+  await container.stop();
+});
+```
+
+**利点:** 本物のDBで動作確認
+
+**問題:**
+- **遅い**: コンテナ起動に数秒〜十数秒
+- **環境依存**: Docker が必要
+- **並列テスト困難**: ポート競合
+
+**Test Containers を許容する場合:**
+- 統合テスト・E2Eテスト
+- 複雑なSQLクエリの検証
+- DB固有機能（トランザクション分離レベル等）のテスト
+
+---
+
+### テスト種別と推奨アプローチ
+
+| テスト種別 | Repository | Gateway | 推奨理由 |
+|-----------|------------|---------|---------|
+| **Unit Test** | InMemory | Stub | 高速、独立 |
+| **Integration Test** | Test Containers | Sandbox環境 | 本物の振る舞い確認 |
+| **E2E Test** | 本番相当DB | 本番相当API | 最終確認 |
+
+---
+
+## 7.2 依存分類別のテスト方法
 
 | 分類 | テスト方法 | モック | 例 |
 |------|-----------|:------:|-----|
