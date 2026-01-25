@@ -21,7 +21,7 @@
 | 分類 | 命名パターン | 責務 | 例 |
 |------|-------------|------|-----|
 | **Command** | `{状態}{Entity}` | 状態変更を伴う操作 | `DraftDeal`, `PendingVisitReport` |
-| **Query** | `{計算内容}` | 純粋計算、副作用なし | `DealScoreCalculation`, `CustomerRankEvaluation` |
+| **Pure** | `{計算内容}` | 純粋計算、副作用なし | `DealScoreCalculation`, `CustomerRankEvaluation` |
 | **ReadModel** | `{取得内容}ForXxx` | 読み取り専用データ取得 | `PendingDealsForApprover`, `CustomerSummaryForDashboard` |
 
 ### Polymorphism Preference
@@ -31,7 +31,7 @@ enum は振る舞いを持たない識別子にのみ使用。
 
 ### Boundary Layer (このプロジェクト)
 
-境界層は Command/Query/ReadModel の分類外。外部世界とドメインの接点として扱う。
+境界層は Command/Pure/ReadModel の分類外。外部世界とドメインの接点として扱う。
 
 | 分類 | 命名パターン | 責務 | 例 |
 |------|-------------|------|-----|
@@ -49,7 +49,7 @@ src/
 │   │   ├── CustomerRegistrationStore.ts
 │   │   └── CustomerRegistration.test.ts
 │   ├── segmentation/            #   セグメント・ランク
-│   │   ├── CustomerRankEvaluation.ts      # Query
+│   │   ├── CustomerRankEvaluation.ts      # Pure
 │   │   ├── CustomerSegmentResolver.ts     # Boundary: Strategy選択
 │   │   └── CustomerSegmentation.test.ts
 │   ├── contacts/                #   担当者・連絡先
@@ -74,7 +74,7 @@ src/
 │   │   ├── ProposalStore.ts
 │   │   └── Proposal.test.ts
 │   └── forecasting/             #   売上予測
-│       ├── QuarterlyForecast.ts           # Query
+│       ├── QuarterlyForecast.ts           # Pure
 │       └── Forecasting.test.ts
 │
 ├── activities/                   # 営業活動
@@ -311,7 +311,7 @@ src/deals/lifecycle/
 
 | 種別 | 対象 | モック |
 |------|------|--------|
-| 単体 | Query, Pure Logic | なし |
+| 単体 | Pure | なし |
 | 統合 | Command | Store (InMemory) |
 | E2E | ユースケース全体 | なし（実環境） |
 
@@ -359,7 +359,7 @@ pnpm security:scan          # Security vulnerability scan
 
 ### 新規クラス作成時
 
-- [ ] Command / Query / ReadModel のいずれかに分類したか
+- [ ] Command / Pure / ReadModel のいずれかに分類したか
 - [ ] 日本語ドメイン用語を英語に正しく変換したか（上記対応表参照）
 - [ ] 状態遷移がある場合、Pending Object Pattern を適用したか
 - [ ] ディレクトリは概念ベース（customers/, deals/ 等）か

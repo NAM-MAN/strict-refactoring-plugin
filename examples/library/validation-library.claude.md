@@ -24,7 +24,7 @@ TypeScript向けの型安全なバリデーションライブラリ。Zodライ�
 | **Validator** | `{Rule}Validator` | 個別のバリデーションルール | `MinLengthValidator`, `EmailValidator` |
 | **Parser** | `{Type}Parser` | 入力のパースと変換 | `DateParser`, `NumberParser` |
 
-**注**: ライブラリは状態を持たないため、Command/ReadModel は不要。Query（純粋計算）の原則を適用。
+**注**: ライブラリは状態を持たないため、Command/ReadModel は不要。Pure（純粋計算）の原則を適用。
 
 ### Polymorphism Preference
 
@@ -117,7 +117,7 @@ export { Infer, InferInput, InferOutput } from "./inference/Infer";
 // ❌ export { MinLengthValidator } from "./validators/string/MinLengthValidator";
 ```
 
-### Schema Interface (Query として設計)
+### Schema Interface (Pure として設計)
 
 ```typescript
 // 全てのSchemaは純粋関数として設計（副作用なし）

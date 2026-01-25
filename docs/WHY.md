@@ -119,7 +119,7 @@ function addToTotal(amount: number): number {
 
 副作用がある関数は「同じ引数で呼んでも結果が変わる可能性がある」ため、テストが難しくなります。
 
-**本スキルのアプローチ:** 副作用を「Command」というカテゴリに集約し、副作用のない処理を「Query」「Transition」として分離する。これにより、テストしやすい部分とテストが難しい部分を明確に分けます。
+**本スキルのアプローチ:** 副作用を「Command」というカテゴリに集約し、副作用のない処理を「Pure」として分離する。これにより、テストしやすい部分とテストが難しい部分を明確に分けます。
 
 ### イミュータビリティ（不変性）
 
@@ -199,7 +199,7 @@ class User {
 
 ---
 
-# Part 1: 4分類（Command / Transition / Query / ReadModel）
+# Part 1: 3分類（Command / Pure / ReadModel）
 
 ## 1.1 なぜ分類が必要か
 
@@ -257,60 +257,43 @@ class OrderService {
 - 副作用のない部分（計算）→ テストが簡単
 - 副作用のある部分（DB操作等）→ モックが必要だが、範囲が限定される
 
-### 解決: 4分類
+### 解決: 3分類
 
-| 分類 | 定義 | 状態変更 | 外部リソース | テストのしやすさ |
-|------|------|:------:|:------:|:------:|
-| **Command** | 永続状態を変更、外部に作用 | あり | メソッド引数 | △ モック必要 |
-| **Transition** | 型 A → 型 B への変換 | なし | なし | ◎ モック不要 |
-| **Query** | 値の計算・導出 | なし | なし | ◎ モック不要 |
-| **ReadModel** | 読み取り専用でデータ取得 | なし | メソッド引数 | △ モック必要 |
+| 分類 | 定義 | テスト | オブジェクト生成 |
+|------|------|:------:|:------:|
+| **Command** | 永続状態を変更、外部に作用 | モック必要 | 依存注入必要 |
+| **Pure** | 型変換、計算、判定（純粋関数） | モック不要 | `new` で完結 |
+| **ReadModel** | 読み取り専用でデータ取得 | モック必要 | 依存注入必要 |
 
-**なぜ4つなのか（3つでも5つでもなく）:**
+**なぜこの3分類なのか — 2つの観点からの導出:**
 
-| 分類数 | 問題 |
-|--------|------|
-| 2つ（CQS: Command/Query） | 「DBから読む」と「計算する」が区別できない |
-| 3つ（Command/Query/ReadModel） | 「バリデーション」と「計算」が区別できない |
-| **4つ（本スキル）** | 副作用の有無 × 読み書きの組み合わせを網羅 |
-| 5つ以上 | 複雑すぎて判断が難しい |
+| 観点 | Command | Pure | ReadModel |
+|------|---------|------|-----------|
+| **副作用** | あり | なし | なし |
+| **外部依存** | あり | なし | あり |
+| **テスト観点** | モック必要 | モック不要 | モック必要 |
+| **オブジェクト生成観点** | 依存注入が必要 | `new X()` で完結 | 依存注入が必要 |
 
-### 判断フロー
+この分類は **Gary Bernhardt の "Functional Core, Imperative Shell"** を**拡張**しています：
 
-```
-このクラスは...
-├─ 永続化/外部通信を行う？
-│   ├─ YES + 書き込み → Command
-│   │   例: 稟議を申請する、注文を確定する
-│   └─ YES + 読み取りのみ → ReadModel
-│       例: 承認待ち稟議の一覧を取得する
-└─ NO（純粋な計算だけ）
-    ├─ 入力型と出力型が異なる？ → Transition
-    │   例: 「未検証の入力」→「検証済みの入力」
-    └─ 同じ概念の計算？ → Query
-        例: 「価格」と「税率」→「税額」を計算
-```
+| Functional Core, Imperative Shell | 本スキル |
+|-----------------------------------|---------|
+| Functional Core（純粋関数、依存なし） | **Pure** |
+| Imperative Shell（副作用あり、依存あり） | **Command** / **ReadModel**（CQS に基づき分割） |
 
----
+**本スキルでの「副作用」の定義:**
 
-## 1.2 代替アプローチ比較
+本スキルでは「副作用」を**永続状態の変更**と定義します。DB読み取りは「呼び出すたびに結果が変わりうる」という意味で観測可能な効果ですが、状態を変更しないため副作用とは見なしません。
 
-| アプローチ | 説明 | 長所 | 短所 | 採用 |
-|-----------|------|------|------|:----:|
-| **本スキル: 4分類** | Command/Transition/Query/ReadModel | 責務明確、テスト容易 | 学習コスト | ✅ |
-| **CQS（2分類）** | 書き込み(Command)と読み取り(Query)だけ分ける | シンプル | 「DB読み取り」と「計算」の区別なし | △ |
-| **クリーンアーキテクチャ** | UseCase/Entity/Gateway等の層で分ける | 層の分離が明確 | 小規模には過剰、ファイル数が多い | △ |
-| **分類なし** | 自由に設計 | 柔軟 | 一貫性なし、レビュー困難 | ❌ |
+**なぜ CQS の Query を2つに分けるか:**
 
-**なぜCQSでは不十分か:**
-
-CQS（Command Query Separation）は「書き込み」と「読み取り」を分ける古典的な考え方です。しかし：
+CQS（Command Query Separation）では、読み取り操作は全て「Query」です。しかし：
 
 ```typescript
-// CQSでは両方「Query」になるが...
-class TaxCalculator {
-  calculate(price: number, rate: number): number {
-    return price * rate;  // 純粋な計算 → モック不要でテスト可能
+// CQSでは両方「Query」だが...
+class TaxCalculation {
+  amount(): Money {
+    return this.price.multiply(this.rate);  // 純粋計算 → モック不要
   }
 }
 
@@ -321,7 +304,53 @@ class OrderFinder {
 }
 ```
 
-テスト方法が全く異なるのに同じ「Query」扱いでは、どこがテストしやすくてどこが難しいか分かりません。本スキルでは前者をQuery、後者をReadModelと区別します。
+テスト方法が全く異なるのに同じ「Query」扱いでは、どこがテストしやすくてどこが難しいか分かりません。本スキルでは前者を **Pure**、後者を **ReadModel** と区別します。
+
+**なぜ Command と ReadModel を分けるか:**
+
+テスト観点・オブジェクト生成観点では Command と ReadModel は同じです（両方ともモック必要、DI必要）。しかし分離する理由は：
+
+| 観点 | 理由 |
+|------|------|
+| **CQS の徹底** | 「書き込み」と「読み取り」を同じクラスに混ぜない |
+| **意図の明確化** | Command は「世界を変える」、ReadModel は「世界を観察する」 |
+| **将来の拡張性** | CQRS への移行時に分離済みなら容易 |
+| **監査・セキュリティ** | 書き込みは異なる監査証跡・認可チェックが必要なことが多い |
+
+つまり、Command と ReadModel の分離は**テスト容易性ではなく、設計意図の明確化**が目的です。
+
+### 判断フロー
+
+```
+このクラスは...
+├─ 永続化/外部通信を行う？
+│   ├─ YES + 書き込み → Command
+│   │   例: 稟議を申請する、注文を確定する
+│   └─ YES + 読み取りのみ → ReadModel
+│       例: 承認待ち稟議の一覧を取得する
+└─ NO（純粋な計算だけ） → Pure
+    例: 税額計算、バリデーション、型変換
+```
+
+---
+
+## 1.2 代替アプローチ比較
+
+| アプローチ | 説明 | 長所 | 短所 | 採用 |
+|-----------|------|------|------|:----:|
+| **本スキル: 3分類** | Command/Pure/ReadModel | 責務明確、テスト容易 | 学習コスト | ✅ |
+| **CQS（2分類）** | 書き込み(Command)と読み取り(Query)だけ分ける | シンプル | 「DB読み取り」と「計算」の区別なし | △ |
+| **クリーンアーキテクチャ** | UseCase/Entity/Gateway等の層で分ける | 層の分離が明確 | 小規模には過剰、ファイル数が多い | △ |
+| **分類なし** | 自由に設計 | 柔軟 | 一貫性なし、レビュー困難 | ❌ |
+
+**なぜCQSでは不十分か:**
+
+CQS（Command Query Separation）は「書き込み」と「読み取り」を分ける古典的な考え方です。しかし、CQSの「Query」には2種類が混在しています：
+
+1. **Pure（純粋計算）**: 外部依存なし、モック不要
+2. **ReadModel（外部読み取り）**: 外部依存あり、モック必要
+
+本スキルではこれを明確に分離します。
 
 ---
 
@@ -645,11 +674,25 @@ class ApprovedRingi {
 
 ---
 
-## 1.4 Transition
+## 1.4 Pure
 
-**Transition**は、型 A → 型 B への変換を行う純粋関数クラスです。副作用はありません。
+**Pure**は、外部依存のない純粋関数クラスです。副作用はありません。
 
-**例:** 未検証の入力 → 検証済みの入力、文字列 → 日付オブジェクト
+**Pure が担う役割:**
+- **型変換**: 未検証の入力 → 検証済みの入力
+- **計算**: 税額計算、割引適用
+- **判定**: ポリシー適合チェック
+
+### なぜCommandと分離するか
+
+| 観点 | Command | Pure |
+|------|---------|------|
+| 副作用 | あり（DB書き込み等） | なし |
+| 外部依存 | あり（Repository等） | なし |
+| テスト | モック必要 | モック不要 |
+| オブジェクト生成 | 依存注入が必要 | `new` で完結 |
+
+### 型変換の例（バリデーション）
 
 ```typescript
 // 「未検証の稟議入力」→「検証済みの稟議入力」への変換
@@ -672,21 +715,7 @@ class RingiInputValidation {
 }
 ```
 
-**なぜCommandと分離するか:**
-
-| 観点 | Command | Transition |
-|------|---------|------------|
-| テスト | DBモックが必要 | モック不要、入力→出力を確認するだけ |
-| 再利用 | 副作用があるので再利用しにくい | どこでも安全に再利用可能 |
-| 責務 | 「保存する」「送信する」 | 「検証する」「変換する」 |
-
----
-
-## 1.5 Query
-
-**Query**は、値の計算・導出を行う純粋関数クラスです。副作用はありません。
-
-**例:** 税額計算、割引適用、判定ロジック
+### 計算の例（税額）
 
 ```typescript
 // 税額を計算する
@@ -711,7 +740,7 @@ console.log(tax.amount);      // 100円
 console.log(tax.priceWithTax); // 1100円
 ```
 
-**なぜクラスにするのか（関数ではなく）:**
+### なぜクラスにするのか（関数ではなく）
 
 | 関数の場合 | クラスの場合 |
 |-----------|-------------|
@@ -720,13 +749,19 @@ console.log(tax.priceWithTax); // 1100円
 | 同じ引数を何度も渡す | 一度渡せば複数の計算ができる |
 | 関連する計算がバラバラ | 関連する計算がまとまる |
 
-**なぜTransitionではなくQueryか:**
-- Transition: 型が変わる（`UnvalidatedInput` → `ValidatedInput`）
-- Query: 型は変わらない（`Money` → `Money`）、同じ概念の別の表現
+### 命名規約で意図を表現
+
+Pure の中での意図は命名規約で表現します：
+
+| 意図 | 命名パターン | 例 |
+|------|-------------|-----|
+| 型変換 | `Unvalidated*` → `Validated*` | `UnvalidatedExpense.validate()` |
+| 計算 | `*Calculation`, `*On`, `*Tax` | `TaxOn`, `ShippingFeeCalculation` |
+| 判定 | `*Policy`, `*Rule`, `*Compliance` | `ExpensePolicyCompliance` |
 
 ---
 
-## 1.6 ReadModel
+## 1.5 ReadModel
 
 **ReadModel**は、永続層から読み取り専用でデータを取得するクラスです。書き込みは行いません。
 
@@ -746,12 +781,14 @@ class RingisForApprover {
 **Repository（リポジトリ）とは:**
 データの保存・取得を担当するクラスです。「データがどこに保存されているか（DB、ファイル、API）」を隠蔽し、「〇〇を保存する」「〇〇を取得する」というシンプルなインターフェースを提供します。
 
-**なぜQueryと分離するか:**
+**なぜPureと分離するか:**
 
-| 観点 | Query | ReadModel |
-|------|-------|-----------|
+| 観点 | Pure | ReadModel |
+|------|------|-----------|
 | 外部リソース | 使わない | Repository を使う |
+| 副作用 | なし | なし（読み取りのみ） |
 | テスト | モック不要 | Repository のモックが必要 |
+| オブジェクト生成 | `new` で完結 | 依存注入が必要 |
 | 例 | 税額計算 | 稟議一覧取得 |
 
 ---
@@ -2357,10 +2394,10 @@ class Order {
 
 | 本スキルのルール | Tell, Don't Ask との関係 |
 |----------------|-------------------------|
-| **Transition クラス** | ロジックをドメインオブジェクトに持たせる |
+| **Pure クラス** | ロジックをドメインオブジェクトに持たせる |
 | **getter 禁止** | Ask を強制的に防ぐ |
 | **1クラス1パブリックメソッド** | 意味のある操作だけを公開 |
-| **4分類** | Service 層の肥大化（貧血モデル）を防ぐ |
+| **3分類** | Service 層の肥大化（貧血モデル）を防ぐ |
 
 ---
 
@@ -3192,7 +3229,7 @@ test('ボタンクリックでカウントが表示される', () => {
 | テスト種別 | 比率 | 対象 |
 |-----------|------|------|
 | **Static** | - | TypeScript 型チェック、ESLint |
-| **Unit** | 50% | Pure Logic（Query, Transition）、複雑な計算 |
+| **Unit** | 50% | Pure Logic、複雑な計算 |
 | **Integration** | 40% | Command + InMemory Repository |
 | **E2E** | 10% | クリティカルパス（決済、認証）のみ |
 
@@ -3278,7 +3315,7 @@ test('ユーザーが注文を完了できる', async ({ page }) => {
 
 | Google | 実質的な意味 | 本スキルとの対応 |
 |--------|-------------|-----------------|
-| Small | 外部リソースなし、純粋なロジック | Query, Transition のテスト |
+| Small | 外部リソースなし、純粋なロジック | Pure のテスト |
 | Medium | localhost のDB、InMemory | Command + InMemory Repository |
 | Large | 本物の外部サービス | E2E、Contract Test |
 
@@ -3291,7 +3328,7 @@ test('ユーザーが注文を完了できる', async ({ page }) => {
 
 ```typescript
 // Small Test: 外部リソースなし
-// Query, Transition は全て Small
+// Pure は全て Small
 test('税額計算', () => {
   expect(new TaxOn(Money.of(1000), TaxRate.of(0.1)).amount.value).toBe(100);
 });
@@ -3544,7 +3581,7 @@ end
 
 **ただし以下は守る:**
 - テストは必ず書く（後からでも）
-- Pure Logic（Query, Transition）は Unit テストが容易なので書く
+- Pure Logic は Unit テストが容易なので書く
 - Command は InMemory Repository で Integration テストを書く
 
 ---
@@ -4291,15 +4328,14 @@ class OrderService {
 - テスト時にモックを注入できる
 - 変更の影響範囲が限定される
 
-### 本スキルの4分類と凝集度の関係
+### 本スキルの3分類と凝集度の関係
 
-本スキルの4分類（Command / Transition / Query / ReadModel）は、**凝集度を最大化する設計パターン**です：
+本スキルの3分類（Command / Pure / ReadModel）は、**凝集度を最大化する設計パターン**です：
 
 | 分類 | 責務 | 凝集度への貢献 |
 |------|------|--------------|
 | **Command** | 副作用を実行する | 副作用を1箇所に集約（他のクラスは副作用を持たない） |
-| **Transition** | 状態遷移ロジック | ビジネスロジックを1箇所に集約 |
-| **Query** | 純粋な計算 | 入力→出力の変換に集中 |
+| **Pure** | 型変換・計算・判定 | 純粋関数として入力→出力の変換に集中 |
 | **ReadModel** | 読み取り専用データ | 表示用データの保持に集中 |
 
 **従来のアプローチ（Service層に全部入れる）との比較:**
@@ -4314,11 +4350,11 @@ class OrderService {
   sendConfirmation(order: Order): void { /* メール送信 */ }
 }
 
-// ✅ 高凝集: 責務ごとに分離（4分類）
-class OrderCreator { create(dto: OrderDTO): Order { /* Transition */ } }
-class OrderValidator { validate(order: Order): boolean { /* Query */ } }
+// ✅ 高凝集: 責務ごとに分離（3分類）
+class OrderCreator { create(dto: OrderDTO): Order { /* Pure */ } }
+class OrderValidator { validate(order: Order): boolean { /* Pure */ } }
 class OrderSaver { save(order: Order, repo: OrderRepository): void { /* Command */ } }
-class OrderTotalCalculator { calculate(order: Order): number { /* Query */ } }
+class OrderTotalCalculator { calculate(order: Order): number { /* Pure */ } }
 class OrderConfirmationSender { send(order: Order, mailer: Mailer): void { /* Command */ } }
 ```
 
@@ -4328,7 +4364,7 @@ class OrderConfirmationSender { send(order: Order, mailer: Mailer): void { /* Co
 
 | レベル | 名称 | 説明 | 本スキルとの関係 |
 |--------|------|------|----------------|
-| 1（最高） | 機能的凝集 | 1つの機能のみを実行 | ✅ 4分類の各クラス |
+| 1（最高） | 機能的凝集 | 1つの機能のみを実行 | ✅ 3分類の各クラス |
 | 2 | 順序的凝集 | 順番に実行される処理をまとめる | △ Commandで許容 |
 | 3 | 通信的凝集 | 同じデータを扱う処理をまとめる | △ 注意が必要 |
 | 4 | 手続き的凝集 | 実行順序でまとめる | ❌ 避けるべき |
@@ -4365,7 +4401,7 @@ class EmployeeSaver { save(employee: Employee, repo: EmployeeRepository): void {
 ```
 
 **本スキルとの関係:**
-- 4分類（Command/Transition/Query/ReadModel）は、責務を明確に分離する
+- 3分類（Command/Pure/ReadModel）は、責務を明確に分離する
 - 「1クラス1パブリックメソッド」ルールは、SRPを徹底したもの
 
 ### O: Open/Closed Principle（開放閉鎖原則）
@@ -4649,7 +4685,7 @@ class Order {
 ```
 
 **本スキルのルール:**
-- Transition クラスにはロジックを持たせる
+- Pure クラスにはロジックを持たせる
 - 「データだけ持っている」クラスは ReadModel のみ
 
 ### Shotgun Surgery（散弾銃手術）
@@ -4739,16 +4775,14 @@ class Email {
 
 ## 判断フロー
 
-### 4分類
+### 3分類
 
 ```
 このクラスは外部リソース（DB、API等）にアクセスする？
 ├─ YES → 書き込みがある？
 │   ├─ YES → Command
 │   └─ NO → ReadModel
-└─ NO → 型が変わる？（入力型 ≠ 出力型）
-    ├─ YES → Transition
-    └─ NO → Query
+└─ NO → Pure（型変換、計算、判定）
 ```
 
 ### Polymorphism vs switch
@@ -4778,7 +4812,7 @@ class Email {
 ## チェックリスト
 
 ### 新規クラス作成時
-- [ ] Command / Transition / Query / ReadModel のいずれかに分類したか
+- [ ] Command / Pure / ReadModel のいずれかに分類したか
 - [ ] 完全コンストラクタになっているか（全フィールドがコンストラクタで設定）
 - [ ] 継承を使っていないか（Interface + Composition を使用）
 - [ ] 引数は2個以下か（多い場合はオブジェクトにまとめる）
@@ -4802,9 +4836,8 @@ class Email {
 | 用語 | 意味 |
 |------|------|
 | **Command** | 永続状態を変更するクラス。副作用あり。例: 稟議を申請する |
-| **Transition** | 型変換を行う純粋関数クラス。例: バリデーション |
-| **Query** | 計算を行う純粋関数クラス。例: 税額計算 |
-| **ReadModel** | 読み取り専用でデータを取得するクラス。例: 一覧取得 |
+| **Pure** | 型変換・計算・判定を行う純粋関数クラス。モック不要。例: バリデーション、税額計算 |
+| **ReadModel** | 読み取り専用でデータを取得するクラス。外部依存あり。例: 一覧取得 |
 | **完全コンストラクタ** | コンストラクタを抜けた時点でオブジェクトが完全に有効 |
 | **Pending Object Pattern** | 状態遷移を型で表現するパターン |
 | **Result型** | 成功/失敗を戻り値の型で表現する仕組み |

@@ -1,6 +1,6 @@
 ---
 name: strict-refactoring
-description: コード修正、リファクタリング、設計相談を受けた際に使用。Command/Query分類、完全コンストラクタ、ポリモーフィズムを適用する。
+description: コード修正、リファクタリング、設計相談を受けた際に使用。Command/Pure/ReadModel分類、完全コンストラクタ、ポリモーフィズムを適用する。
 ---
 
 # Strict Refactoring Skill
@@ -39,9 +39,9 @@ Go はシンプルさを重視する文化を持つ。以下のルールを緩�
 | 小さな struct 分割 | 過度な分割より、明快な関数を優先してよい |
 | ドットチェーン制限 | receiver methods のチェーンは許容 |
 | Polymorphism | 単純な type switch は許容（interface が過剰な場合） |
-| Command/Query 分類 | struct + receiver method で表現。Pending Object Pattern は適用 |
+| Command/Pure/ReadModel 分類 | struct + receiver method で表現。Pending Object Pattern は適用 |
 
-#### Go での Command/Query 実装例
+#### Go での Command/Pure 実装例
 
 ```go
 // Command: Pending Object Pattern
@@ -64,7 +64,7 @@ func (p *PendingReservation) Confirm(repo ReservationRepository) (*Reservation, 
     return reservation, nil
 }
 
-// Query: struct + receiver method
+// Pure: struct + receiver method
 type TaxOn struct {
     purchase Money
     rate     TaxRate
@@ -95,7 +95,7 @@ func (t TaxOn) Amount() Money {
 
 ## 大原則
 
-1. **4分類に従え**: すべてのクラスは **Command / Transition / Query / ReadModel** のいずれかに分類せよ
+1. **3分類に従え**: すべてのクラスは **Command / Pure / ReadModel** のいずれかに分類せよ
 2. **完全コンストラクタ**: オブジェクトは生成時点で完全に有効な状態にせよ
 3. **ポリモーフィズム**: 複数ロジックは Interface + 実装クラスで表現せよ（enum + switch 禁止）
 4. **イミュータブル優先**: 状態変更は最小限に、変更時は新しいオブジェクトを返す
@@ -160,33 +160,36 @@ class Ringi {
 }
 ```
 
-## 1. クラス分類: Command / Transition / Query / ReadModel
+## 1. クラス分類: Command / Pure / ReadModel
 
-すべてのクラスは以下の4つに**排他的に**分類される。
+**ドメイン層の**クラスは以下の3つに**排他的に**分類される。境界層（Controller, Mapper, Resolver等）は分類対象外。
 
-| 分類 | 定義 | 副作用 | 外部リソース | 主な用途 |
-|------|------|:------:|:------:|---------|
-| **Command** | 永続状態を変更する、または外部システムに作用する | あり | メソッド引数 | 状態変更の実行 |
-| **Transition** | 型 A → 型 B への変換（純粋関数） | なし | なし | バリデーション、パース |
-| **Query** | 値の計算・導出（純粋関数） | なし | なし | 税計算、判定 |
-| **ReadModel** | 永続層から読み取り専用でデータを取得 | なし | メソッド引数 | 一覧取得、検索 |
+| 分類 | 定義 | 副作用 | 外部依存 | テスト | オブジェクト生成 |
+|------|------|:------:|:------:|:------:|:------:|
+| **Command** | 永続状態を変更する、または外部システムに作用する | あり | あり | モック必要 | 依存注入必要 |
+| **Pure** | 型変換、計算、判定（純粋関数） | なし | なし | モック不要 | `new` で完結 |
+| **ReadModel** | 永続層から読み取り専用でデータを取得 | なし | あり | モック必要 | 依存注入必要 |
 
-**4分類の判断フロー:**
+**注:** 「副作用」は**永続状態の変更**を指す。DB読み取りは状態を変更しないため副作用とは見なさない。
+
+**なぜ Command と ReadModel を分けるか:**
+- テスト観点では同じ（両方モック必要）だが、**CQS の徹底**と**設計意図の明確化**が目的
+- 詳細は [WHY.md](../docs/WHY.md) を参照
+
+**3分類の判断フロー:**
 
 ```
 このクラスは...
 ├─ 永続化/外部通信を行う？
 │   ├─ YES + 書き込み → Command
 │   └─ YES + 読み取りのみ → ReadModel
-│
-└─ NO（純粋関数）
-    ├─ 入力型と出力型が異なる？ → Transition
-    └─ 同じ概念の別表現？ → Query
+└─ NO（純粋関数） → Pure
 ```
 
-**Transition と Query の違い:**
-- **Transition**: `UnvalidatedData` → `ValidatedData`（型が変わる）
-- **Query**: `Money` → `number`（同じ「金額」の別表現）
+**Pure が担う役割:**
+- **型変換**: `UnvalidatedData` → `ValidatedData`
+- **計算**: `Money` × `TaxRate` → `Money`
+- **判定**: `Expense` + `Policy` → `boolean`
 
 ### 1.1 Command（命令実行）
 
@@ -230,7 +233,7 @@ class DraftRingi {
 | 取消 | `{Entity}Cancellation` | `execute(store)` | `InvoiceCancellation(target).execute(store)` |
 | 送信 | `Outgoing{Resource}` | `deliver(transport)` | `OutgoingNotification(to, message).deliver(slack)` |
 
-**注意:** 検証（バリデーション）は Transition（1.1.1節）として分類。Command は必ず外部リソースへの副作用を伴う。
+**注意:** 検証（バリデーション）は Pure（1.2節）として分類。Command は必ず外部リソースへの副作用を伴う。
 
 #### 状態名の選択
 
@@ -438,34 +441,32 @@ Aggregate Root = 整合性の境界を持つエンティティの集合のルー
 - 子エンティティ（ApprovalStep, ExpenseItem）は親と一緒に保存
 - 子エンティティ単体の Repository は作らない
 
-### 1.1.1 Transition（状態遷移）
+### 1.2 Pure（純粋関数）
 
-状態遷移を型で表現するクラス。**副作用なし、純粋関数。**
+外部依存のない純粋関数クラス。**副作用なし、モック不要でテスト可能。**
 
-CQS の定義上は Query に分類されるが、「状態の変換」という意図を明示するため別カテゴリとして扱う。
+#### Pure が担う役割
 
-#### Query との違い
+| 役割 | 命名パターン | メソッド | 例 |
+|------|-------------|---------|-----|
+| 型変換 | `Unvalidated{Entity}`, `Raw{Entity}` | `validate()`, `parse()` | `UnvalidatedExpense.validate()` |
+| 計算 | `{計算内容}On`, `{計算内容}Calculation` | `amount()`, `rate()` | `TaxOn.amount()` |
+| 判定 | `{Entity}Policy`, `{Entity}Compliance` | `ok()`, `satisfied()` | `ExpensePolicyCompliance.ok()` |
 
-| 観点 | Transition | Query |
-|------|-----------|-------|
-| 意図 | 状態 A → 状態 B への変換 | 値の計算・導出 |
-| 入出力 | 型が変わる（UnvalidatedExpense → ValidatedExpense） | 同じ概念の別表現（Money → string） |
-| 命名 | `Unvalidated{Entity}`, `Raw{Entity}` | `{計算内容}` |
-| メソッド | `validate()`, `parse()`, `normalize()` | `amount()`, `count()`, `ok()` |
+#### 出力の意味別メソッド名
 
-#### パターン
+メソッド名は「出力の型」ではなく「出力の意味」で選択せよ。
 
-```
-{状態}{Entity}(入力データ).{遷移}(依存) → {変換後Entity}
-```
+| 意味 | メソッド名 | 返す型 | 例 |
+|------|----------|--------|-----|
+| 金額を問う | `amount()` | Money | `消費税(税抜金額).amount()` |
+| 数量を問う | `count()` / `quantity()` | int | `未承認件数(稟議一覧).count()` |
+| 割合を問う | `rate()` / `ratio()` | Decimal | `承認率(部署).rate()` |
+| 適合判定 | `ok()` / `satisfied()` | bool | `経費規定適合(経費).ok()` |
+| 表示用変換 | `text()` / `formatted()` | str | `金額表示(money).text()` |
+| 型変換 | `validate()` / `parse()` | 変換先の型 | `UnvalidatedExpense.validate()` |
 
-| 操作 | クラス名パターン | メソッド | 例 |
-|------|-----------------|---------|-----|
-| 検証 | `Unvalidated{Entity}` | `validate(rules)` | `UnvalidatedExpense(data).validate(rules)` |
-| パース | `Raw{Entity}` | `parse()` | `RawCsvRow(line).parse()` |
-| 正規化 | `Denormalized{Entity}` | `normalize()` | `DenormalizedAddress(input).normalize()` |
-
-#### 実装例
+#### 実装例: 型変換（バリデーション）
 
 ```typescript
 // 検証: Unvalidated → validate → Validated（Result を返す）
@@ -489,58 +490,7 @@ if (!result.ok) {
 const validated = result.value;
 ```
 
-```typescript
-// パース: RawCsvRow → parse → ParsedTransaction
-class RawCsvRow {
-  constructor(private readonly line: string) {}
-
-  parse(): ParsedTransaction {
-    const [date, amount, description] = this.line.split(',');
-    return new ParsedTransaction(
-      LocalDate.parse(date),
-      Money.of(Number(amount)),
-      description.trim()
-    );
-  }
-}
-
-// 使用
-const transaction = new RawCsvRow("2025-01-25,10000,交通費").parse();
-```
-
-**注意:** Transition は副作用がないため、テストが容易。モック不要で単体テスト可能。
-
-### 1.2 Query（問い合わせ）
-
-入力から出力を導出するクラス。**純粋計算のみ、外部リソースなし。**
-
-#### パターン
-
-```
-{計算内容}(入力).{出力メソッド}()
-```
-
-#### 出力の意味別メソッド名
-
-メソッド名は「出力の型」ではなく「出力の意味」で選択せよ。
-
-| 意味 | メソッド名 | 返す型 | 例 |
-|------|----------|--------|-----|
-| 金額を問う | `amount()` | Money | `消費税(税抜金額).amount()` |
-| 数量を問う | `count()` / `quantity()` | int | `未承認件数(稟議一覧).count()` |
-| 割合を問う | `rate()` / `ratio()` | Decimal | `承認率(部署).rate()` |
-| 適合判定 | `ok()` / `satisfied()` | bool | `経費規定適合(経費).ok()` |
-| 表示用変換 | `text()` / `formatted()` | str | `金額表示(money).text()` |
-| 型変換 | `result()` | 変換先の型 | `請求書From(受注).result(clock)` |
-| 解決/選択 | `resolve()` | Strategy等 | `承認ルート解決(申請種別).resolve()` |
-
-**判断基準:**
-- ドメイン的に「金額」を問う Query → `amount()`
-- ドメイン的に「数量」を問う Query → `count()`
-- 型変換として別オブジェクトを生成 → `result()`
-- Strategy/Policy を選択 → `resolve()`
-
-#### 実装例
+#### 実装例: 計算
 
 ```typescript
 // 消費税計算
@@ -557,6 +507,8 @@ class ConsumptionTaxOn {
 // 使用
 const tax = new ConsumptionTaxOn(subtotal).amount();
 ```
+
+#### 実装例: 判定
 
 ```typescript
 // 経費規定チェック
@@ -650,14 +602,15 @@ const label = new MoneyDisplay(total).text(); // "¥1,234,567"
 {取得内容}(検索条件).fetch(conn): Promise<{結果}>
 ```
 
-#### Query との違い
+#### Pure との違い
 
-| 観点 | Query | ReadModel |
-|------|-------|-----------|
+| 観点 | Pure | ReadModel |
+|------|------|-----------|
 | 外部リソース | なし | DB接続等を受け取る |
 | 副作用 | なし | なし（読み取りのみ） |
 | テスト方法 | モック不要 | DB接続をモック |
-| 用途 | 純粋計算 | 一覧取得、検索、集計 |
+| オブジェクト生成 | `new` で完結 | 依存注入が必要 |
+| 用途 | 計算、バリデーション | 一覧取得、検索、集計 |
 
 #### 実装例
 
@@ -796,9 +749,9 @@ if (rule.canApprove(ringi)) {
 }
 ```
 
-#### Strategy パターン = Query + ポリモーフィズム
+#### Strategy パターン = Pure + ポリモーフィズム
 
-Strategy パターンは「差し替え可能な Query」として実装される:
+Strategy パターンは「差し替え可能な Pure」として実装される:
 
 ```typescript
 // 承認ルート戦略（稟議の種類や金額で異なるルートを選択）
@@ -840,19 +793,19 @@ class UrgentApprovalRoute implements ApprovalRouteStrategy {
 
 Resolver は **Factory パターンの一種** として、条件に基づいて Strategy や実装を選択する。
 
-**注意:** Resolver は Command / Transition / Query / ReadModel の4分類には属さない。境界層専用のユーティリティパターンである。
+**注意:** Resolver は Command / Pure / ReadModel の3分類には属さない。境界層専用のユーティリティパターンである。
 
 #### Resolver の位置づけ
 
 | 観点 | 説明 |
 |------|------|
-| **分類** | Factory（4分類外、境界層専用） |
+| **分類** | Factory（3分類外、境界層専用） |
 | **配置** | **境界層**（Controller, UseCase, Handler から呼び出す） |
 | **役割** | 条件に基づいて適切な Strategy/実装を選択 |
 | **副作用** | なし（インスタンス生成のみ） |
 
-**Query との違い:**
-- Query: 値を計算して返す（`amount()`, `count()`）
+**Pure との違い:**
+- Pure: 値を計算して返す（`amount()`, `count()`）
 - Resolver: オブジェクトを生成して返す（`resolve()` → Strategy インスタンス）
 
 **switch の許容:**
@@ -1122,7 +1075,7 @@ class ApproveRingiAction implements RingiAction {
 | プロトタイプ/PoC | 本スキル無視でOK。動くことを優先 |
 | 分岐が2つだけで値の選択のみ | Polymorphism 不要。if/else で十分 |
 | 分岐が将来増える見込みなし | Polymorphism 不要 |
-| 1回しか使わない計算 | Query クラス化不要。インラインでOK |
+| 1回しか使わない計算 | Pure クラス化不要。インラインでOK |
 | チーム全員が理解できない | 段階的に導入。一度に全部やらない |
 
 #### Polymorphism の判断基準（統合版）
@@ -1265,7 +1218,7 @@ const total = items
 
 **真の基準:** 「このメソッドは**1つのこと**だけをしているか？」
 
-Command/Query/Transition の分類に従えば自然と短くなる。行数より「単一責任」を重視せよ。
+Command/Pure/ReadModel の分類に従えば自然と短くなる。行数より「単一責任」を重視せよ。
 
 #### 行数 vs 引数のトレードオフ
 
@@ -1717,7 +1670,7 @@ discountRate(): number {
 | 自明な単一条件 | どこでも | そのまま |
 | 不明確な単一条件 | どこでも | `isXxx` 変数に抽出 |
 | 複合条件（2条件以上）| 1箇所のみ | `isXxx` 変数に抽出 |
-| 複合条件（2条件以上）| **2箇所以上** | **Query クラスに抽出** |
+| 複合条件（2条件以上）| **2箇所以上** | **Pure クラスに抽出** |
 
 **判断フロー:**
 
@@ -1728,7 +1681,7 @@ discountRate(): number {
 │   └─ YES → isXxx 変数に抽出
 └─ 複合条件（2条件以上）か？
     ├─ 1箇所のみで使用 → isXxx 変数に抽出
-    └─ 2箇所以上で使用 → Query クラスに抽出
+    └─ 2箇所以上で使用 → Pure クラスに抽出
 ```
 
 ```typescript
@@ -1746,7 +1699,7 @@ if (isEligible) {
   // ...
 }
 
-// ✅ Good: 複合条件 → Query クラス
+// ✅ Good: 複合条件 → Pure クラス
 class ShippingEligibility {
   constructor(private readonly order: Order) {}
 
@@ -2364,7 +2317,7 @@ class TaxOn {
     return Result.ok(new TaxOn(subtotal));
   }
   
-  // Query は常に成功（前提条件は create で検証済み）
+  // Pure は常に成功（前提条件は create で検証済み）
   amount(): Money {
     return this.subtotal.multiply(0.10);
   }
@@ -2415,12 +2368,12 @@ class DraftRingi {
 
 **ルール:** `Result<T, never>` は型の嘘。ドメインエラーがないなら `Promise<T>` を使え。
 
-#### Query と Result
+#### Pure と Result
 
-**原則:** Query は Result を返さない。計算不能な状態は静的ファクトリで検証すべき。
+**原則:** Pure は Result を返さない（型変換を除く）。計算不能な状態は静的ファクトリで検証すべき。
 
 ```typescript
-// ✅ Good: ファクトリで検証済みなので Query は常に成功
+// ✅ Good: ファクトリで検証済みなので Pure は常に成功
 class TaxOn {
   private constructor(private readonly subtotal: Money) {}
   
@@ -3186,14 +3139,14 @@ describe("請求書発行", () => {
             /------\
            / 統合   \       <- 40%（Command + InMemory Repository）
           /----------\
-         /   単体     \     <- 50%（Pure Logic: Query, Transition）
+         /   単体     \     <- 50%（Pure Logic）
         /--------------\
 ```
 
 | テスト種別 | 比率 | 対象 | モック |
 |-----------|:----:|------|--------|
 | **Static** | - | TypeScript 型チェック、ESLint | - |
-| **単体** | 50% | Query, Transition, Pure Logic | なし |
+| **単体** | 50% | Pure Logic | なし |
 | **統合** | 40% | Command + InMemory Repository | InMemory 実装のみ |
 | **E2E** | 10% | クリティカルパス（決済、認証） | なし（実環境） |
 
@@ -3356,8 +3309,7 @@ it('複雑なクエリが正しく動作する', async () => {
 
 | クラス分類 | 推奨テスト方式 | DB必要？ |
 |-----------|---------------|:--------:|
-| Query | 純粋単体テスト | ❌ |
-| Transition | 純粋単体テスト | ❌ |
+| Pure | 純粋単体テスト | ❌ |
 | Command | InMemory Repository | ❌ |
 | ReadModel | Testcontainers | ✅ |
 | Repository実装 | Testcontainers | ✅ |
@@ -3918,7 +3870,7 @@ class RingiController {
 
 | 本スキルのルール | Next.js での適用 |
 |-----------------|-----------------|
-| Command/Query 分類 | Server Actions = Command, RSC = ReadModel |
+| Command/Pure/ReadModel 分類 | Server Actions = Command, RSC = ReadModel |
 | Repository | Server Actions 内で直接使用可 |
 | エラー処理 | Server Actions は Result 型を返す |
 
@@ -3967,7 +3919,7 @@ function RingiForm() {
 |-----------------|----------------|
 | Repository | Spring Data Repository をそのまま使用 |
 | DI | `@Autowired` / コンストラクタインジェクション |
-| Transition | Record / data class で実装 |
+| Pure | Record / data class で実装 |
 
 ---
 
@@ -4034,7 +3986,7 @@ class ConfirmOrder {
 コードレビュー時に使用。詳細は各 Section を参照。
 
 ### 分類（Section 1）
-- [ ] **4分類**: Command / Transition / Query / ReadModel のいずれかに分類されているか
+- [ ] **3分類**: Command / Pure / ReadModel のいずれかに分類されているか
 - [ ] **副作用の分離**: Command のみ副作用あり、他は純粋関数か
 - [ ] **境界層**: switch/if分岐はドメイン層ではなく境界層にあるか
 

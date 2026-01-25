@@ -21,7 +21,7 @@ EC事業者向け決済代行APIサービス。クレジットカード決済、
 | 分類 | 命名パターン | 責務 | 例 |
 |------|-------------|------|-----|
 | **Command** | `{状態}{Entity}` | 決済状態を変更 | `PendingPayment`, `AuthorizedPayment` |
-| **Query** | `{計算内容}` | 手数料計算等 | `TransactionFeeCalculation`, `RefundAmountCalculation` |
+| **Pure** | `{計算内容}`, `Unvalidated{Entity}` | 手数料計算等 | `TransactionFeeCalculation`, `RefundAmountCalculation` |
 | **ReadModel** | `{取得内容}ForXxx` | 取引履歴等 | `TransactionHistoryForMerchant` |
 
 ### Polymorphism Preference
@@ -31,7 +31,7 @@ enum は振る舞いを持たない識別子にのみ使用。
 
 ### Boundary Layer (このプロジェクト)
 
-境界層は Command/Query/ReadModel の分類外。外部世界とドメインの接点として扱う。
+境界層は Command/Pure/ReadModel の分類外。外部世界とドメインの接点として扱う。
 `api/` ディレクトリ配下は全て境界層。
 
 | 分類 | 命名パターン | 責務 | 例 |
@@ -59,7 +59,7 @@ src/
 │   ├── refunds/                 #   返金
 │   │   ├── PendingRefund.ts               # Command
 │   │   ├── CompletedRefund.ts
-│   │   ├── RefundAmountCalculation.ts     # Query
+│   │   ├── RefundAmountCalculation.ts     # Pure
 │   │   ├── RefundStore.ts
 │   │   └── Refund.test.ts
 │   └── cancellation/            #   取消
@@ -71,7 +71,7 @@ src/
 │   │   ├── CreditCardPaymentGateway.ts    # Interface
 │   │   ├── StripeGateway.ts               # 実装
 │   │   ├── GmoGateway.ts                  # 実装
-│   │   ├── CardPaymentResolver.ts         # Query: Gateway選択
+│   │   ├── CardPaymentResolver.ts         # Pure: Gateway選択
 │   │   └── CreditCard.test.ts
 │   ├── convenience-store/       #   コンビニ決済
 │   │   ├── ConvenienceStorePaymentGateway.ts
@@ -94,7 +94,7 @@ src/
 │   │   └── ApiKey.test.ts
 │   └── contracts/               #   契約・手数料
 │       ├── MerchantContract.ts
-│       ├── TransactionFeeCalculation.ts   # Query
+│       ├── TransactionFeeCalculation.ts   # Pure
 │       └── Contract.test.ts
 │
 ├── transactions/                 # 取引履歴
@@ -102,7 +102,7 @@ src/
 │   │   ├── TransactionHistoryForMerchant.ts  # ReadModel
 │   │   └── TransactionHistory.test.ts
 │   └── reconciliation/          #   精算
-│       ├── DailyReconciliation.ts         # Query
+│       ├── DailyReconciliation.ts         # Pure
 │       └── Reconciliation.test.ts
 │
 ├── webhooks/                     # Webhook配信
@@ -112,7 +112,7 @@ src/
 │   │   ├── WebhookStore.ts
 │   │   └── WebhookDelivery.test.ts
 │   └── retry/                   #   リトライ
-│       ├── WebhookRetryPolicy.ts          # Query
+│       ├── WebhookRetryPolicy.ts          # Pure
 │       └── Retry.test.ts
 │
 ├── api/                          # API層（境界層）

@@ -21,7 +21,7 @@ ECサイトの注文処理を担当するバックグラウンドワーカー。
 | 分類 | 命名パターン | 責務 | 例 |
 |------|-------------|------|-----|
 | **Command** | `{状態}{Entity}` | 注文状態を変更 | `PendingOrder`, `ConfirmedOrder` |
-| **Query** | `{計算内容}` | 在庫計算等 | `InventoryAvailability`, `ShippingCostCalculation` |
+| **Pure** | `{計算内容}` | 在庫計算等 | `InventoryAvailability`, `ShippingCostCalculation` |
 | **ReadModel** | `{取得内容}ForXxx` | 読み取り専用 | `ShipmentTrackingForCustomer` |
 
 ### Polymorphism Preference
@@ -31,7 +31,7 @@ enum は振る舞いを持たない識別子にのみ使用。
 
 ### Boundary Layer (このプロジェクト)
 
-境界層は Command/Query/ReadModel の分類外。外部世界とドメインの接点として扱う。
+境界層は Command/Pure/ReadModel の分類外。外部世界とドメインの接点として扱う。
 
 | 分類 | 命名パターン | 責務 | 例 |
 |------|-------------|------|-----|
@@ -51,7 +51,7 @@ src/
 │   │   ├── OrderStore.ts
 │   │   └── OrderLifecycle.test.ts
 │   ├── validation/              #   注文バリデーション
-│   │   ├── OrderValidation.ts             # Query
+│   │   ├── OrderValidation.ts             # Pure
 │   │   └── OrderValidation.test.ts
 │   └── cancellation/            #   キャンセル
 │       ├── OrderCancellation.ts           # Command
@@ -64,7 +64,7 @@ src/
 │   │   ├── ReservationStore.ts
 │   │   └── Reservation.test.ts
 │   ├── availability/            #   在庫確認
-│   │   ├── InventoryAvailability.ts       # Query
+│   │   ├── InventoryAvailability.ts       # Pure
 │   │   └── Availability.test.ts
 │   └── release/                 #   在庫解放
 │       ├── InventoryRelease.ts            # Command
@@ -92,7 +92,7 @@ src/
 │   │   ├── ShipmentTracking.ts            # ReadModel
 │   │   └── Tracking.test.ts
 │   └── cost/                    #   送料計算
-│       ├── ShippingCostCalculation.ts     # Query
+│       ├── ShippingCostCalculation.ts     # Pure
 │       └── ShippingCost.test.ts
 │
 ├── saga/                         # Saga（分散トランザクション）

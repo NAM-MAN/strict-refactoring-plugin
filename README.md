@@ -4,7 +4,7 @@ Claude Code用のリファクタリングスキル。コードレビュー・設
 
 ## 特徴
 
-- **4分類**: Command / Query / ReadModel / Transition
+- **3分類**: Command / Pure / ReadModel
 - **完全コンストラクタ**: 生成時点で有効なオブジェクト
 - **Polymorphism優先**: switch/if-else より多態性
 - **Screaming Architecture**: ディレクトリ構造が目的を語る
