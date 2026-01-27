@@ -3733,6 +3733,220 @@ class FailingPaymentGateway implements PaymentGateway {
 
 ---
 
+## 7.10 テスト命名規則 — なぜ「仕様書としてのテスト」か
+
+### 問題: テストが仕様を伝えない
+
+多くのプロジェクトでこんなテスト名を見かけます：
+
+```typescript
+// ❌ よくあるテスト名
+describe("TaxCalculation", () => {
+  it("should work", () => { ... });
+  it("test1", () => { ... });
+  it("正常系", () => { ... });
+  it("異常系", () => { ... });
+});
+```
+
+**問題点:**
+- テスト名を見ても「何を検証しているか」分からない
+- テストが失敗しても「何が壊れたか」分からない
+- 仕様書を別途メンテナンスする必要がある
+
+### 解決: テスト名を仕様書にする
+
+テスト名自体が仕様書として機能すれば：
+- テストを読むだけで仕様が分かる
+- テスト失敗時に「何が壊れたか」が即座に分かる
+- 仕様書とコードの乖離が起きない
+
+### なぜこの命名パターンか — 4人の専門家の視点
+
+#### 増田亨（ミノ駆動）の視点: ドメイン言語
+
+> 「ドメインモデルは業務の言葉で語るべきである。テストも同様に、技術用語ではなく業務担当者が使う言葉で書くことで、仕様書としての価値が生まれる」
+
+```typescript
+// ❌ 技術用語
+"DraftRingi と Repository を接続したら永続化できるべき"
+
+// ✅ ドメイン言語
+"起案中の稟議を申請すると申請済稟議として記録されるべき"
+```
+
+**ポイント:** Repository、Entity、Persist などの技術用語を避け、「申請する」「記録される」などの業務用語を使う。
+
+#### Robert C. Martin（Uncle Bob）の視点: F.I.R.S.T. 原則
+
+Clean Code では「テスト名は仕様を読むように読めるべき」と説いています。
+
+| F.I.R.S.T. | テスト命名への適用 |
+|------------|------------------|
+| **Fast** | 名前を見て即座に理解できる |
+| **Independent** | 他のテストを知らなくても意味が分かる |
+| **Repeatable** | 曖昧な表現（「快適に」等）を避ける |
+| **Self-validating** | 期待結果が名前に含まれる |
+| **Timely** | TDD で先にテスト名を書ける |
+
+```typescript
+// ❌ Self-validating 違反: 結果が不明
+"営業担当者が快適に経費精算を提出できるべき"
+
+// ✅ Self-validating: 期待結果が明確
+"営業担当者が経費精算を提出すると完了画面が表示されるべき"
+```
+
+**「快適に」が禁止される理由:**
+- 主観的で測定不能
+- 再現性がない（Repeatable 違反）
+- Pass/Fail を判定できない（Self-validating 違反）
+
+#### Martin Fowler の視点: Given-When-Then
+
+Fowler は BDD（Behavior-Driven Development）の影響を受け、テストは「Given-When-Then」形式で書くべきと提唱しています。
+
+| 要素 | 本スキルの命名パターン |
+|------|---------------------|
+| **Given** | `{Subject} は {input} に対して` |
+| **When** | `{action} すると` |
+| **Then** | `{output} を返すべき` |
+
+```typescript
+// Given-When-Then マッピング
+"ConsumptionTaxOn は 1000円 に対して 100円の消費税 を返すべき"
+//                  ↑Given           ↑When          ↑Then
+```
+
+#### Kent Beck の視点: テスト名は文章
+
+TDD の提唱者 Kent Beck は「テスト名は完全な文章であるべき」と述べています。
+
+> "Test names should be sentences that describe behavior"
+
+```typescript
+// ❌ 文章になっていない
+"taxCalculation"
+"test_tax_1000"
+
+// ✅ 完全な文章
+"ConsumptionTaxOn は 1000円に対して 100円を返すべき"
+```
+
+### 命名パターンの設計根拠
+
+| テスト種別 | パターン | 根拠 |
+|-----------|---------|------|
+| **単体（正常系）** | `{Subject} は {input} に対して {output} を返すべき` | Given-When-Then の完全な表現 |
+| **単体（状態）** | `{Subject} は {action} すると {state} になるべき` | Pending Object Pattern の状態遷移を表現 |
+| **単体（エラー）** | `{Subject} は {condition} の場合 {error} を返すべき` | 異常系の条件と結果を明示 |
+| **結合** | `{A} を {action} すると {result} として記録されるべき` | マクロな振る舞いを業務用語で表現 |
+| **E2E** | `{User} が {action} すると {observable} が表示されるべき` | ユーザー視点の観測可能な結果 |
+
+### なぜ「〜できるべき」を禁止するか
+
+```typescript
+// ❌ 「できるべき」の問題
+"TaxCalculation は税額を計算できるべき"
+```
+
+| 問題 | 説明 |
+|------|------|
+| **入力が不明** | 何円に対して？ |
+| **出力が不明** | いくらを返す？ |
+| **検証不能** | 「計算できる」の定義は？ |
+
+```typescript
+// ✅ 具体的な入出力
+"ConsumptionTaxOn は 1000円に対して 100円を返すべき"
+```
+
+### 実例: Before / After
+
+#### 単体テスト
+
+```typescript
+// ❌ Before: 何を検証しているか不明
+describe("TaxCalculation", () => {
+  it("should calculate tax", () => {
+    expect(new TaxOn(1000).amount()).toBe(100);
+  });
+});
+
+// ✅ After: 仕様書として読める
+describe("ConsumptionTaxOn", () => {
+  it("1000円に対して100円の消費税を返すべき", () => {
+    expect(new ConsumptionTaxOn(Money.of(1000)).amount()).toEqual(Money.of(100));
+  });
+
+  it("0円に対して0円を返すべき", () => {
+    expect(new ConsumptionTaxOn(Money.of(0)).amount()).toEqual(Money.of(0));
+  });
+
+  it("負の金額の場合 ValidationError を返すべき", () => {
+    const result = ConsumptionTaxOn.create(Money.of(-100));
+    expect(result.ok).toBe(false);
+  });
+});
+```
+
+#### 結合テスト
+
+```typescript
+// ❌ Before: 技術用語、曖昧
+describe("RingiService", () => {
+  it("should save to repository", async () => { ... });
+});
+
+// ✅ After: ドメイン言語、明確
+describe("稟議申請", () => {
+  it("起案中の稟議を申請すると申請済稟議として記録されるべき", async () => {
+    const draft = RingiTestFactory.draft({ title: "備品購入" });
+    const submitted = await draft.submit(repository, clock);
+    const saved = await repository.findById(submitted.id);
+    expect(saved).toBeInstanceOf(SubmittedRingi);
+  });
+});
+```
+
+#### E2E テスト
+
+```typescript
+// ❌ Before: 主観的、測定不能
+describe("Expense E2E", () => {
+  it("ユーザーが快適に経費精算できるべき", async () => { ... });
+});
+
+// ✅ After: 観測可能、測定可能
+describe("経費精算 E2E", () => {
+  it("営業担当者が経費精算を提出すると完了画面が表示されるべき", async ({ page }) => {
+    await page.goto("/expenses/new");
+    await page.fill('[data-testid="amount"]', "5000");
+    await page.click('[data-testid="submit"]');
+    await expect(page.locator('[data-testid="success-message"]')).toBeVisible();
+  });
+
+  it("営業担当者が一覧を開くと3秒以内に表示されるべき", async ({ page }) => {
+    const start = Date.now();
+    await page.goto("/expenses");
+    await page.waitForSelector('[data-testid="expense-list"]');
+    expect(Date.now() - start).toBeLessThan(3000);
+  });
+});
+```
+
+### まとめ: テスト命名の価値
+
+| 観点 | 効果 |
+|------|------|
+| **仕様書** | テストを読むだけで仕様が分かる |
+| **デバッグ** | 失敗時に「何が壊れたか」が即座に分かる |
+| **レビュー** | テスト名だけでレビュー可能 |
+| **ドキュメント** | 仕様書との乖離が起きない |
+| **TDD** | テスト名を先に書くことで設計が明確になる |
+
+---
+
 # Part 8: 発展編 — 本スキル「以外」の選択肢
 
 > **このパートについて:**

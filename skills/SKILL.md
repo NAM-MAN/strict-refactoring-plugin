@@ -3001,6 +3001,94 @@ it('金額超過時にエラーを返す', () => {
 | External Resource | モックを注入してテスト |
 | Non-deterministic | 固定値を返すモックを注入してテスト |
 
+### 9.0 テスト命名規則
+
+テストは**仕様書**として機能すべき。各レベルで検証する「価値」を名前で表現せよ。
+
+#### 命名パターン
+
+| テスト種別 | パターン | 用途 | 例 |
+|-----------|---------|------|-----|
+| **単体（正常系）** | `{Subject} は {input} に対して {output} を返すべき` | 戻り値検証 | `ConsumptionTaxOn は1000円に対して100円を返すべき` |
+| **単体（状態）** | `{Subject} は {action} すると {state} になるべき` | 状態遷移 | `DraftRingi は申請すると申請済みになるべき` |
+| **単体（エラー）** | `{Subject} は {condition} の場合 {error} を返すべき` | エラー処理 | `TaxOn は負の金額の場合 ValidationError を返すべき` |
+| **単体（境界）** | `{Subject} は {boundary} でも {behavior} すべき` | 境界値 | `ExpenseReport は明細0件の場合 ValidationError を返すべき` |
+| **結合** | `{A} を {action} すると {result} として記録されるべき` | 永続化・連携 | `起案稟議を申請すると申請済稟議として記録されるべき` |
+| **E2E（機能）** | `{User} が {action} すると {observable} が表示されるべき` | ユーザージャーニー | `営業担当者が経費精算を提出すると完了画面が表示されるべき` |
+| **E2E（性能）** | `{User} が {action} すると {metric} 以内に {result} すべき` | パフォーマンス | `営業担当者が一覧を開くと3秒以内に表示されるべき` |
+
+#### 禁止事項
+
+| 禁止 | 理由 | 代替 |
+|------|------|------|
+| `〜できるべき`（汎用的） | 何を検証しているか不明確 | 動詞に応じた具体的な表現 |
+| `快適に〜`（主観的） | 測定不能、再現不能 | 観測可能な結果を記述 |
+| 技術用語（Repository等） | ドメイン知識が伝わらない | ドメイン言語で表現 |
+
+#### 実装例
+
+```typescript
+// 単体テスト: 振る舞いの価値
+describe("ConsumptionTaxOn", () => {
+  describe("正常系", () => {
+    it("1000円に対して100円の消費税を返すべき", () => {
+      const tax = new ConsumptionTaxOn(Money.of(1000)).amount();
+      expect(tax).toEqual(Money.of(100));
+    });
+  });
+
+  describe("境界値", () => {
+    it("0円に対して0円を返すべき", () => {
+      const tax = new ConsumptionTaxOn(Money.of(0)).amount();
+      expect(tax).toEqual(Money.of(0));
+    });
+  });
+
+  describe("エラー系", () => {
+    it("負の金額の場合 ValidationError を返すべき", () => {
+      const result = ConsumptionTaxOn.create(Money.of(-100));
+      expect(result.ok).toBe(false);
+    });
+  });
+});
+
+// 結合テスト: 連携の価値（技術用語を避け、ドメイン言語で）
+describe("稟議申請", () => {
+  it("起案中の稟議を申請すると申請済稟議として記録されるべき", async () => {
+    const repository = new InMemoryRingiRepository();
+    const draft = RingiTestFactory.draft({ title: "備品購入" });
+
+    const submitted = await draft.submit(repository, clock);
+
+    const saved = await repository.findById(submitted.id);
+    expect(saved).toBeInstanceOf(SubmittedRingi);
+  });
+
+  it("金額上限超過の稟議を申請すると AmountExceededError を返すべき", async () => {
+    const result = DraftRingi.create(RingiId.generate(), { amount: Money.of(200_000_000) });
+    expect(result.ok).toBe(false);
+  });
+});
+
+// E2E テスト: ユーザー価値（観測可能な結果を記述）
+describe("経費精算 E2E", () => {
+  it("営業担当者が経費精算を提出すると完了画面が表示されるべき", async ({ page }) => {
+    await page.goto("/expenses/new");
+    await page.fill('[data-testid="amount"]', "5000");
+    await page.click('[data-testid="submit"]');
+
+    await expect(page.locator('[data-testid="success-message"]')).toBeVisible();
+  });
+
+  it("営業担当者が金額未入力で提出するとエラーメッセージが表示されるべき", async ({ page }) => {
+    await page.goto("/expenses/new");
+    await page.click('[data-testid="submit"]');
+
+    await expect(page.locator('[data-testid="error-amount"]')).toContainText("金額は必須です");
+  });
+});
+```
+
 ### 9.1 Pure Logic のテスト
 
 依存クラス自体を単体テストし、親クラスではモックしない。
@@ -4024,6 +4112,11 @@ class ConfirmOrder {
 - [ ] **5つルール**: 各ディレクトリの直接の子は5つ以下か
 
 ### テスト（Section 9）
+- [ ] **命名規則**: テスト名が仕様書として機能しているか（9.0 参照）
+  - 単体: `{Subject} は {input} に対して {output} を返すべき`
+  - 結合: `{A} を {action} すると {result} として記録されるべき`
+  - E2E: `{User} が {action} すると {observable} が表示されるべき`
+- [ ] **禁止表現**: 「〜できるべき」（汎用的）、「快適に」（主観的）、技術用語を避けているか
 - [ ] **Pure Logic**: 依存クラス自体の単体テストがあるか（親でモック不要に）
 - [ ] **テストデータ独立性**: 各テストが自身のデータを作成・クリーンアップしているか（Fixtures禁止）
 - [ ] **Factory配置**: Test Data Factory がテストとコロケーションされているか
