@@ -307,7 +307,7 @@ const result = schema.safeParse({
 import fc from "fast-check";
 
 describe("StringSchema", () => {
-  it("任意の文字列を正しくパースする", () => {
+  it("StringSchema は 任意の文字列 に対して パース成功結果 を返すべき", () => {
     fc.assert(
       fc.property(fc.string(), (str) => {
         const result = v.string().safeParse(str);
@@ -319,15 +319,15 @@ describe("StringSchema", () => {
     );
   });
 
-  it("min制約を満たす文字列のみ受け入れる", () => {
+  it("StringSchema は 長さがminLength以上の文字列 に対して パース成功結果 を返すべき", () => {
     fc.assert(
       fc.property(
-        fc.integer({ min: 1, max: 100 }),
+        fc.integer({ min:1, max: 100 }),
         fc.string(),
         (minLength, str) => {
           const schema = v.string().min(minLength);
           const result = schema.safeParse(str);
-          
+
           if (str.length >= minLength) {
             expect(result.success).toBe(true);
           } else {
@@ -352,7 +352,7 @@ describe("NumberSchema", () => {
     [-Infinity, false],
     [Number.MAX_SAFE_INTEGER, true],
     [Number.MIN_SAFE_INTEGER, true],
-  ])("parse(%p) should return success=%p", (input, expected) => {
+  ])("NumberSchema は %p に対して success=%p を返すべき", (input, expected) => {
     const result = v.number().safeParse(input);
     expect(result.success).toBe(expected);
   });

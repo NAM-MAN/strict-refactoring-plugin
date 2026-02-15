@@ -432,7 +432,7 @@ const DEFAULT_RETRY_POLICY: RetryPolicy = {
 
 ```typescript
 describe("OrderCreatedHandler", () => {
-  it("正常系: 注文を処理してOrderConfirmedイベントを発行", async () => {
+  it("OrderCreatedイベントを正常に処理すると OrderConfirmedとして記録されるべき", async () => {
     const event = createOrderCreatedEvent({ orderId: "ord_123" });
     const publisher = new MockEventPublisher();
 
@@ -443,7 +443,7 @@ describe("OrderCreatedHandler", () => {
     );
   });
 
-  it("冪等性: 同じイベントを2回処理しても1回しか実行されない", async () => {
+  it("同じIdempotencyKeyのOrderCreatedイベントを2回処理すると 1回のみ実行として記録されるべき", async () => {
     const event = createOrderCreatedEvent({ orderId: "ord_123" });
     const saga = new SpySaga();
 
@@ -453,7 +453,7 @@ describe("OrderCreatedHandler", () => {
     expect(saga.executeCount).toBe(1);
   });
 
-  it("在庫不足時: 補償処理なしでOrderFailedイベントを発行", async () => {
+  it("在庫不足時にOrderCreatedイベントを処理すると 補償なしでOrderFailedとして記録されるべき", async () => {
     const event = createOrderCreatedEvent({ orderId: "ord_123" });
     inventoryService.setAvailability(false);
 
@@ -464,7 +464,7 @@ describe("OrderCreatedHandler", () => {
     );
   });
 
-  it("決済失敗時: 在庫を解放してOrderFailedイベントを発行", async () => {
+  it("決済失敗時にOrderCreatedイベントを処理すると 在庫解放とOrderFailedとして記録されるべき", async () => {
     const event = createOrderCreatedEvent({ orderId: "ord_123" });
     paymentService.setAuthResult(false);
 

@@ -1,0 +1,27 @@
+> 🔽 このテキスト全体をコピーして、Claude Codeに貼り付けてください
+
+---
+
+以下のコマンドを実行して、strict-refactoring プラグインをインストールしてください：
+
+```bash
+/plugin marketplace add yy/strict-refactoring-plugin
+```
+
+```bash
+/plugin install strict-refactoring@strict-refactoring-marketplace
+```
+
+---
+
+**インストール完了後、すぐに使えます：**
+
+```bash
+「このコードをstrict-refactoringのルールでレビューして」
+```
+
+---
+
+**詳細な使い方は [README.md](https://github.com/yy/strict-refactoring-plugin) を参照してください。**
+
+**📖 詳細なドキュメント（パターン・ルールの解説）は [GitHubリポジトリ](https://github.com/yy/strict-refactoring-plugin) を参照してください。**

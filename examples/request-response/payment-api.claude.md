@@ -385,7 +385,7 @@ class MockCreditCardGateway implements CreditCardPaymentGateway {
 
 ```typescript
 describe("PendingAuthorization", () => {
-  it("成功時にAuthorizedPaymentを返す", async () => {
+  it("PendingAuthorization は 正常なカードトークン に対して AuthorizedPayment を返すべき", async () => {
     const gateway = new MockCreditCardGateway();
     gateway.setResponse("tok_123", AuthorizationResult.approved("txn_456"));
 
@@ -402,7 +402,7 @@ describe("PendingAuthorization", () => {
     expect(result.transactionId.value).toBe("txn_456");
   });
 
-  it("同じIdempotencyKeyで2回呼んでも1回しか課金されない", async () => {
+  it("同じIdempotencyKeyで2回オーソリ要求すると 1回のみ課金処理が記録されるべき", async () => {
     // 冪等性テスト
   });
 });

@@ -46,7 +46,7 @@
 ### Pure Logic Test
 ```typescript
 describe("ExpenseValidator", () => {
-  it("金額が0以下の経費を拒否する", () => {
+  it("ExpenseValidator は 金額が0以下の場合 拒否を返すべき", () => {
     const validator = new ExpenseValidator();
     expect(validator.isValid(new ExpenseItem({ amount: Money.of(-100) }))).toBe(false);
   });
@@ -59,7 +59,7 @@ class FixedClock implements Clock {
   constructor(private readonly fixedTime: Date) {}
   now(): Date { return this.fixedTime; }
 }
-it("発行日時にClockの時刻が使用される", () => {
+it("InvoiceFromOrder は Clockの時刻を使用して発行日時を設定するべき", () => {
   const clock = new FixedClock(new Date("2025-01-31T23:59:59+09:00"));
   const invoice = new InvoiceFromOrder(order).result(clock);
   expect(invoice.issuedAt).toEqual(clock.fixedTime);
@@ -159,7 +159,7 @@ class InMemoryRingiRepository implements RingiRepository {
 }
 
 describe("DraftRingi", () => {
-  it("申請後にRepositoryに保存される", async () => {
+  it("DraftRingi を申請すると Repositoryに保存されるべき", async () => {
     const repository = new InMemoryRingiRepository();
     const clock = new FixedClock(new Date("2025-01-25"));
     const id = RingiId.generate();
@@ -197,7 +197,7 @@ describe('RingiApproval', () => {
   beforeEach(async () => { tx = await testDb.beginTransaction(); });
   afterEach(async () => { await tx.rollback(); });
 
-  it('承認後に ApprovedRingi として取得できる', async () => {
+  it('SubmittedRingi を承認すると ApprovedRingiとして取得できるべき', async () => {
     const ringi = await RingiTestFactory.insertSubmitted(tx, { amount: Money.of(50000) });
     const repository = new PostgresRingiRepository(tx);
     const approved = await ringi.approve(repository);
@@ -270,7 +270,7 @@ export class MockEmailGateway implements EmailGateway {
 }
 
 describe("OrderConfirmationService", () => {
-  it("注文確定時に確認メールを送信する", async () => {
+  it("OrderConfirmationService は 注文確定時 に対して 確認メール送信結果 を返すべき", async () => {
     const emailGateway = new MockEmailGateway();
     const service = new OrderConfirmationService(emailGateway);
     await service.confirm(order);
@@ -289,7 +289,7 @@ export class StubPaymentGateway implements PaymentGateway {
 }
 
 describe("CheckoutService", () => {
-  it("決済失敗時にカード拒否エラーを返す", async () => {
+  it("CheckoutService は 決済失敗時 に対して カード拒否エラー を返すべき", async () => {
     const paymentGateway = new StubPaymentGateway();
     paymentGateway.willFail(PaymentFailureReason.CARD_DECLINED);
     const service = new CheckoutService(paymentGateway);
@@ -334,7 +334,7 @@ describe("S3FileStorageGateway Integration", () => {
 
   afterAll(async () => { await container.stop(); });
 
-  it("ファイルをアップロードしてダウンロードできる", async () => {
+  it("S3FileStorageGateway は ファイルをアップロードして ダウンロード結果 を返すべき", async () => {
     const file = new File("test.txt", Buffer.from("hello"));
     const url = await gateway.upload(file);
     const downloaded = await gateway.download(url);
@@ -348,12 +348,12 @@ describe("S3FileStorageGateway Integration", () => {
 describe("StripePaymentGateway Contract", () => {
   const gateway = new StripePaymentGateway(process.env.STRIPE_TEST_KEY!);
 
-  it("テストカードで決済が成功する", async () => {
+  it("StripePaymentGateway は テストカード に対して 決済成功結果 を返すべき", async () => {
     const result = await gateway.charge(Money.of(1000, "JPY"), CardToken.of("tok_visa"));
     expect(result.ok).toBe(true);
   });
 
-  it("拒否カードで決済が失敗する", async () => {
+  it("StripePaymentGateway は 拒否カード に対して 決済失敗結果 を返すべき", async () => {
     const result = await gateway.charge(Money.of(1000, "JPY"), CardToken.of("tok_chargeDeclined"));
     expect(result.ok).toBe(false);
   });
