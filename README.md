@@ -28,11 +28,23 @@ Claude Code用のリファクタリングスキル。コードレビュー・設
 
 ## ドキュメント
 
+### コアファイル
+
 | ドキュメント | 説明 |
 |-------------|------|
 | [WHY.md](docs/WHY.md) | 各ルールの「なぜ」を解説 |
-| [SKILL.md](skills/SKILL.md) | ルール定義・実装パターン |
+| [SKILL.md](skills/SKILL.md) | Core Rules（15ルール + チェックリスト） |
 | [examples/](examples/) | プロジェクト別CLAUDE.md例 |
+
+### パターン参照ファイル（オンデマンド読み込み）
+
+| ファイル | 内容 |
+|---------|------|
+| [command-patterns.md](skills/command-patterns.md) | 3分類判断フロー、Command/Pure/ReadModel、Pending Object、Repository設計 |
+| [error-handling.md](skills/error-handling.md) | Result型、DomainError/InfrastructureError、境界層エラーハンドリング |
+| [code-quality-patterns.md](skills/code-quality-patterns.md) | 完全コンストラクタ、イミュータビリティ、引数/戻り値 |
+| [testing-patterns.md](skills/testing-patterns.md) | テスト戦略、命名規則、Test Data Factory、テストダブル |
+| [language-guides.md](skills/language-guides.md) | 言語別緩和ルール（Go/Rust等）、フレームワーク別ガイダンス、ディレクトリ構造 |
 
 ## ライセンス
 

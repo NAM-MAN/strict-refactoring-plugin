@@ -186,7 +186,7 @@ Composition over Inheritance。
 ✅ Good: expense-reports/, approvals/, employees/
 ```
 
-**禁止:** `common/`, `shared/`, `utils/` **骨格:** `src/expense-reports/DraftExpenseReport.ts` → 詳細: code-quality-patterns.md
+**禁止:** `common/`, `shared/`, `utils/` **骨格:** `src/expense-reports/DraftExpenseReport.ts` → 詳細: language-guides.md
 
 ---
 
@@ -248,3 +248,8 @@ External Resource・Clock・Randomはメソッド引数で受け取れ。
 
 詳細なパターンと実装例は以下のファイルを参照（generate-claude-md がプロジェクトに応じて自動選択）：
 
+- `command-patterns.md` - Command/Pure/ReadModel、Pending Object Pattern、Repository設計
+- `error-handling.md` - Result型、DomainError/InfrastructureError、境界層でのエラーハンドリング
+- `testing-patterns.md` - テスト戦略、命名規則、Test Data Factory、テストダブル
+- `code-quality-patterns.md` - 完全コンストラクタ、イミュータビリティ、引数/戻り値
+- `language-guides.md` - 言語別緩和ルール（Go/Rust等）、フレームワーク別ガイダンス、ディレクトリ構造
