@@ -99,6 +99,32 @@ Step 4: CLAUDE.md 生成
 - `状態: 下書き, 申請中, 承認済み`
 - Mermaid の stateDiagram
 
+
+### 2.5 パターン選択
+
+プロジェクトのシステムタイプとドメインに基づき、以下のパターン参照ファイルを読み込み、関連するパターンを選択せよ。
+
+**パターン参照ファイル:**
+- `command-patterns.md` — Command/Pure/ReadModel, Pending Object, Repository, Polymorphism
+- `error-handling.md` — Result型, DomainError, InfrastructureError, Controller patterns
+- `testing-patterns.md` — Test naming, Test Data Factory, InMemory Repository, test doubles
+- `code-quality-patterns.md` — Complete constructor, dependency types, Early Return, parameters
+- `language-guides.md` — 言語/FW別の適用ガイド (NestJS/Next.js/Spring)
+
+**システムタイプ別パターン選択ルール:**
+
+| System Type | Primary Patterns | Secondary Patterns |
+|-------------|-----------------|-------------------|
+| `request-response/*` | command-patterns, error-handling | testing-patterns |
+| `event-driven/*` | command-patterns, error-handling | testing-patterns |
+| `data-intensive/crud-app` | command-patterns, error-handling | code-quality-patterns |
+| `library/*` | code-quality-patterns, testing-patterns | error-handling |
+| `stateful/*` | command-patterns, code-quality-patterns | error-handling |
+
+**必ず含める:** `language-guides.md` (FW-specific adaptations)
+
+**パターンの変換:** パターンファイルの汎用例（`DraftRingi`, `ExpenseReport`）をプロジェクトのドメイン言語に変換せよ。
+
 ## Step 3: 確認
 
 **確認は最大2問まで。それ以外はスマートデフォルトを使用。**
@@ -150,6 +176,34 @@ Step 4: CLAUDE.md 生成
 | **Command** | `{状態}{Entity}` | 状態変更を伴う操作 | {commandExamples} |
 | **Pure** | `{計算内容}`, `Unvalidated{Entity}` | 純粋計算、型変換、副作用なし | {pureExamples} |
 | **ReadModel** | `{取得内容}ForXxx` | 読み取り専用データ取得 | {readModelExamples} |
+
+
+## このプロジェクトの Command 例
+
+> command-patterns.md から選択し、プロジェクトのドメイン言語に変換して記載
+
+| 操作 | Command クラス | メソッド | 結果 |
+|------|---------------|---------|------|
+| {操作1} | `Draft{Entity1}` | `submit(repo)` | `Submitted{Entity1}` |
+| {操作2} | `{State}{Entity2}` | `{action}(repo)` | `{Result}{Entity2}` |
+
+## このプロジェクトのエラー処理
+
+> error-handling.md から選択し、プロジェクトのドメイン固有エラーを記載
+
+| エラー | 型 | HTTP Status | 例 |
+|--------|-----|-------------|-----|
+| {Entity}の{制約}違反 | BusinessRuleViolationError | 422 | {具体例} |
+| {Entity}が見つからない | NotFoundError | 404 | {具体例} |
+
+## このプロジェクトのテスト戦略
+
+> testing-patterns.md から選択し、プロジェクトのテスト方針を記載
+
+| 対象 | テスト種別 | テスト名例 |
+|------|-----------|-----------|
+| {Entity}作成 | 単体 | `Draft{Entity} は {input} に対して {output} を返すべき` |
+| {Entity}申請 | 統合 | `{Entity} を申請すると申請済として記録されるべき` |
 
 ### Polymorphism Preference
 
@@ -745,6 +799,14 @@ package.json の scripts から抽出:
 ## 参照スキル
 
 - `/strict-refactoring` - クラス分類、命名規則、設計原則の詳細
+
+
+### パターン参照ファイル
+- `command-patterns.md` — Command/Pure/ReadModel の詳細パターン
+- `error-handling.md` — エラー処理の詳細パターン
+- `testing-patterns.md` — テスト戦略の詳細パターン
+- `code-quality-patterns.md` — コード品質の詳細パターン
+- `language-guides.md` — 言語/FW別の適用ガイド
 
 ## 注意事項
 
