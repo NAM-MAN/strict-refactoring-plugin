@@ -42,6 +42,36 @@ Claude Code用のリファクタリングスキル。コードレビュー・設
 3. 「[機能名]をstrict-refactoringの原則で設計して」と依頼して開発開始
 ```
 
+**CLAUDE.mdの自動生成（generate-claude-md スキル）:**
+
+新規プロジェクトの場合、`generate-claude-md` スキルを使ってプロジェクト固有の CLAUDE.md を自動生成できます。
+
+**使い方:**
+1. プロジェクトに以下のファイルを用意します（いずれかでOK）:
+   - `README.md` - プロジェクト名、概要
+   - `docs/Spec.md` または `SPEC.md` - ドメイン構造、機能要件
+   - `docs/Architecture.md` - アーキテクチャ情報
+   - `package.json` / `pyproject.toml` - 技術スタック
+
+2. Claudeに以下のいずれかで依頼します:
+   ```
+   「CLAUDE.mdを生成して」
+   「CLAUDE.md作って」
+   /generate-claude-md
+   ```
+
+3. Claudeが自動的にファイルを読み込んで、プロジェクトに合わせた CLAUDE.md を生成します
+
+**生成される内容:**
+- システムタイプ分類（request-response, event-driven, library など）
+- プロジェクト固有の Class Classification
+- ディレクトリ構造
+- 命名規則（日英対応表）
+- テスト戦略
+- クイックコマンド
+
+> **注意**: CLAUDE.md が既に存在する場合は上書き確認されます。
+
 ### 既存プロジェクトのリファクタリング
 
 ```
@@ -101,6 +131,15 @@ MIT License
 ❌ 「良いアーキテクチャ教えて」
 ✅ 「DDDアプローチで設計したいからstrict-refactoringを使って相談して」
 ```
+
+### CLAUDE.md生成
+
+```
+❌ 「CLAUDE.md適当に書いて」
+✅ 「CLAUDE.mdを生成して」
+```
+
+> **ヒント**: CLAUDE.md を自動生成するには、プロジェクトに `README.md`、`docs/Spec.md`、または `package.json` などのファイルを用意しておくと、より正確な設定が生成されます。
 
 **キーワード**: 「リファクタリング」「設計」「アーキテクチャ」「OOP」「ドメイン駆動」「DDD」などを含めると、自動的にstrict-refactoringスキルが適用されます。
 
