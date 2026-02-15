@@ -27,7 +27,7 @@ Java, Kotlin, Scala, C#, F#, TypeScript, JavaScript, Python, Swift, Go, Rust
 
 **骨格:** `DraftX(data).submit(repo) → SubmittedX`
 
-📖 詳細: [command-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/command-patterns.md)
+📖 詳細: [command-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/command-patterns.md)
 
 ---
 
@@ -44,7 +44,7 @@ class Order {
 
 **骨格:** `new DraftX(id, validatedData)`
 
-📖 詳細: [code-quality-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
+📖 詳細: [code-quality-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
 
 ---
 
@@ -62,7 +62,7 @@ class Order {
 
 **骨格:** `new ManagerRule().canApprove(ringi)`
 
-📖 詳細: [command-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/command-patterns.md)
+📖 詳細: [command-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/command-patterns.md)
 
 ---
 
@@ -79,7 +79,7 @@ class Ringi {
 
 **骨格:** `ringi.approve() → new Ringi(..., approvedStatus)`
 
-📖 詳細: [code-quality-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
+📖 詳細: [code-quality-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
 
 ---
 
@@ -95,7 +95,7 @@ if (!result.ok) return toErrorResponse(result.error);
 
 **骨格:** `DraftX.create(data) → Result<DraftX, ErrorX>`
 
-📖 詳細: [error-handling.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/error-handling.md)
+📖 詳細: [error-handling.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/error-handling.md)
 
 ---
 
@@ -113,7 +113,7 @@ return doProcess(order);
 
 **骨格:** `if (!valid) throw; return process();`
 
-📖 詳細: [code-quality-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
+📖 詳細: [code-quality-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
 
 ---
 
@@ -127,7 +127,7 @@ return doProcess(order);
 
 **骨格:** `new DraftX(data: DraftData)`
 
-📖 詳細: [code-quality-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
+📖 詳細: [code-quality-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
 
 ---
 
@@ -141,7 +141,7 @@ return doProcess(order);
 
 **骨格:** `return { start: d1, end: d2 }`
 
-📖 詳細: [code-quality-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
+📖 詳細: [code-quality-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
 
 ---
 
@@ -155,7 +155,7 @@ return doProcess(order);
 
 **骨格:** `new Money(1000, "JPY")`
 
-📖 詳細: [code-quality-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
+📖 詳細: [code-quality-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
 
 ---
 
@@ -169,7 +169,7 @@ Composition over Inheritance。
 
 **骨格:** `interface XRepository { save(x): void }`
 
-📖 詳細: [code-quality-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
+📖 詳細: [code-quality-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
 
 ---
 
@@ -187,7 +187,7 @@ Composition over Inheritance。
 
 **骨格:** `DraftRingi(data).submit(repo) → SubmittedRingi`
 
-📖 詳細: [command-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/command-patterns.md)
+📖 詳細: [command-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/command-patterns.md)
 
 ---
 
@@ -198,7 +198,7 @@ Composition over Inheritance。
 
 **骨格:** `interface RingiRepository { save(ringi): void }`
 
-📖 詳細: [command-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/command-patterns.md)
+📖 詳細: [command-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/command-patterns.md)
 
 ---
 
@@ -214,7 +214,7 @@ Composition over Inheritance。
 
 **骨格:** `src/expense-reports/DraftExpenseReport.ts`
 
-📖 詳細: [language-guides.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/language-guides.md)
+📖 詳細: [language-guides.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/language-guides.md)
 
 ---
 
@@ -231,7 +231,7 @@ Composition over Inheritance。
 
 **骨格:** `it("X は Y に対して Z を返すべき")`
 
-📖 詳細: [testing-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/testing-patterns.md)
+📖 詳細: [testing-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/testing-patterns.md)
 
 ---
 
@@ -249,7 +249,7 @@ External Resource・Clock・Randomはメソッド引数で受け取れ。
 
 **骨格:** `draft.submit(repository, clock) → SubmittedDraft`
 
-📖 詳細: [code-quality-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
+📖 詳細: [code-quality-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)
 
 ---
 
@@ -282,11 +282,11 @@ External Resource・Clock・Randomはメソッド引数で受け取れ。
 
 詳細なパターンと実装例は以下のGitHubリポジトリで参照できます：
 
-- 📖 [command-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/command-patterns.md) - Command/Pure/ReadModel、Pending Object Pattern、Repository設計
-- 📖 [error-handling.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/error-handling.md) - Result型、DomainError/InfrastructureError、境界層でのエラーハンドリング
-- 📖 [testing-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/testing-patterns.md) - テスト戦略、命名規則、Test Data Factory、テストダブル
-- 📖 [code-quality-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md) - 完全コンストラクタ、イミュータビリティ、引数/戻り値
-- 📖 [language-guides.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/language-guides.md) - 言語別緩和ルール（Go/Rust等）、フレームワーク別ガイダンス、ディレクトリ構造
-- 📖 [WHY.md](https://github.com/yy/strict-refactoring-plugin/blob/main/docs/WHY.md) - 各ルールの「なぜ」を解説
+- 📖 [command-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/command-patterns.md) - Command/Pure/ReadModel、Pending Object Pattern、Repository設計
+- 📖 [error-handling.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/error-handling.md) - Result型、DomainError/InfrastructureError、境界層でのエラーハンドリング
+- 📖 [testing-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/testing-patterns.md) - テスト戦略、命名規則、Test Data Factory、テストダブル
+- 📖 [code-quality-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md) - 完全コンストラクタ、イミュータビリティ、引数/戻り値
+- 📖 [language-guides.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/language-guides.md) - 言語別緩和ルール（Go/Rust等）、フレームワーク別ガイダンス、ディレクトリ構造
+- 📖 [WHY.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/docs/WHY.md) - 各ルールの「なぜ」を解説
 
 > **Generate CLAUDE.md** はプロジェクトに応じて上記のパターンファイルを自動選択・参照します。

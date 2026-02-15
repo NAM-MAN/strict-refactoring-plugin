@@ -23,10 +23,10 @@ Claude Code用の厳格なリファクタリングスキルを、1分で導入�
 Claude Codeを起動して、以下のコマンドを実行：
 
 ```bash
-/plugin marketplace add yy/strict-refactoring-plugin
+/plugin marketplace add NAM-MAN/strict-refactoring-plugin
 ```
 
-> **解説**: このコマンドは `https://github.com/yy/strict-refactoring-plugin` リポジトリのマーケットプレイス設定を読み込みます。このリポジトリは公開されているため、誰でもアクセスできます。
+> **解説**: このコマンドは `https://github.com/NAM-MAN/strict-refactoring-plugin` リポジトリのマーケットプレイス設定を読み込みます。このリポジトリは公開されているため、誰でもアクセスできます。
 
 ### ステップ2: プラグインをインストール
 
@@ -102,16 +102,16 @@ Claude Codeを起動して、以下のコマンドを実行：
 
 ## 📚 学習リソース
 
-詳細なドキュメントはすべて [GitHubリポジトリ](https://github.com/yy/strict-refactoring-plugin) で参照できます：
+詳細なドキュメントはすべて [GitHubリポジトリ](https://github.com/NAM-MAN/strict-refactoring-plugin) で参照できます：
 
-- 📖 **[WHY.md](https://github.com/yy/strict-refactoring-plugin/blob/main/docs/WHY.md)** - 各ルールの「なぜ」を解説
-- 📖 **[SKILL.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/SKILL.md)** - 15の核心ルールとチェックリスト（インストール済み）
-- 📖 **[command-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/command-patterns.md)** - Command/Pure/ReadModel、Pending Object Pattern、Repository設計
-- 📖 **[error-handling.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/error-handling.md)** - Result型、DomainError/InfrastructureError、境界層でのエラーハンドリング
-- 📖 **[testing-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/testing-patterns.md)** - テスト戦略、命名規則、Test Data Factory、テストダブル
-- 📖 **[code-quality-patterns.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)** - 完全コンストラクタ、イミュータビリティ、引数/戻り値
-- 📖 **[language-guides.md](https://github.com/yy/strict-refactoring-plugin/blob/main/skills/language-guides.md)** - 言語別緩和ルール（Go/Rust等）、フレームワーク別ガイダンス、ディレクトリ構造
-- 📖 **[examples/](https://github.com/yy/strict-refactoring-plugin/tree/main/examples)** - プロジェクト別の適用例
+- 📖 **[WHY.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/docs/WHY.md)** - 各ルールの「なぜ」を解説
+- 📖 **[SKILL.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/SKILL.md)** - Core Rules（15ルール + チェックリスト）
+- 📖 **[command-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/command-patterns.md)** - Command/Pure/ReadModel、Pending Object Pattern、Repository設計
+- 📖 **[error-handling.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/error-handling.md)** - Result型、DomainError/InfrastructureError、境界層でのエラーハンドリング
+- 📖 **[testing-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/testing-patterns.md)** - テスト戦略、命名規則、Test Data Factory、テストダブル
+- 📖 **[code-quality-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)** - 完全コンストラクタ、イミュータビリティ、引数/戻り値
+- 📖 **[language-guides.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/language-guides.md)** - 言語別緩和ルール（Go/Rust等）、フレームワーク別ガイダンス、ディレクトリ構造
+- 📖 **[examples/](https://github.com/NAM-MAN/strict-refactoring-plugin/tree/main/examples)** - プロジェクト別の適用例
 
 > **注意**: 上記の参照ファイル（*patterns.md, WHY.md）はインストールされません。GitHubリポジトリで参照してください。
 
@@ -151,7 +151,7 @@ A: はい。既存コードを選択して「このコードをstrict-refactorin
 
 ### Q: 詳細なドキュメント（WHY.mdやpatterns.md）はどこにありますか？
 
-A: 詳細なドキュメントはインストールされません。[GitHubリポジトリ](https://github.com/yy/strict-refactoring-plugin) で参照してください。SKILL.mdには各ルールの概要とチェックリストのみ含まれています。
+A: 詳細なドキュメントはインストールされません。[GitHubリポジトリ](https://github.com/NAM-MAN/strict-refactoring-plugin) で参照してください。SKILL.mdには各ルールの概要とチェックリストのみ含まれています。
 
 ### Q: チームで共有できますか？
 
@@ -182,7 +182,7 @@ A: はい。プロジェクトの `.claude/settings.json` に以下を追加す�
 **エラー例**: `Repository not found` や `Failed to clone repository`
 
 **解決方法**:
-1. リポジトリURLが正しいか確認してください: `https://github.com/yy/strict-refactoring-plugin`
+1. リポジトリURLが正しいか確認してください: `https://github.com/NAM-MAN/strict-refactoring-plugin`
 2. ブラウザで上記URLにアクセスして、リポジトリが公開されていることを確認してください
 3. Git設定が正しいか確認してください:
    ```bash
@@ -229,7 +229,7 @@ A: はい。プロジェクトの `.claude/settings.json` に以下を追加す�
 ## 📞 サポート
 
 問題がある場合は、GitHubのIssuesに報告してください：
-https://github.com/yy/strict-refactoring-plugin/issues
+https://github.com/NAM-MAN/strict-refactoring-plugin/issues
 
 ---
 

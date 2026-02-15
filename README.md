@@ -14,7 +14,7 @@ Claude Code用のリファクタリングスキル。コードレビュー・設
 
 ```bash
 # 1. マーケットプレイスを追加
-/plugin marketplace add yy/strict-refactoring-plugin
+/plugin marketplace add NAM-MAN/strict-refactoring-plugin
 
 # 2. プラグインをインストール
 /plugin install strict-refactoring@strict-refactoring-marketplace
@@ -52,17 +52,17 @@ Claude Code用のリファクタリングスキル。コードレビュー・設
 
 ## ドキュメント
 
-**すべてのドキュメントは [GitHubリポジトリ](https://github.com/yy/strict-refactoring-plugin) で参照できます：**
+**すべてのドキュメントは [GitHubリポジトリ](https://github.com/NAM-MAN/strict-refactoring-plugin) で参照できます：**
 
 - 📖 **[INSTALL.md](INSTALL.md)** - 🚀 1分で導入完了！クイックスタートガイド
-- 📖 **[WHY.md](docs/WHY.md)** - 各ルールの「なぜ」を解説
-- 📖 **[SKILL.md](skills/SKILL.md)** - Core Rules（15ルール + チェックリスト）
-- 📖 **[command-patterns.md](skills/command-patterns.md)** - 3分類判断フロー、Command/Pure/ReadModel、Pending Object、Repository設計
-- 📖 **[error-handling.md](skills/error-handling.md)** - Result型、DomainError/InfrastructureError、境界層エラーハンドリング
-- 📖 **[code-quality-patterns.md](skills/code-quality-patterns.md)** - 完全コンストラクタ、イミュータビリティ、引数/戻り値
-- 📖 **[testing-patterns.md](skills/testing-patterns.md)** - テスト戦略、命名規則、Test Data Factory、テストダブル
-- 📖 **[language-guides.md](skills/language-guides.md)** - 言語別緩和ルール（Go/Rust等）、フレームワーク別ガイダンス、ディレクトリ構造
-- 📖 **[examples/](examples/)** - プロジェクト別CLAUDE.md例
+- 📖 **[WHY.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/docs/WHY.md)** - 各ルールの「なぜ」を解説
+- 📖 **[SKILL.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/SKILL.md)** - Core Rules（15ルール + チェックリスト）
+- 📖 **[command-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/command-patterns.md)** - 3分類判断フロー、Command/Pure/ReadModel、Pending Object、Repository設計
+- 📖 **[error-handling.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/error-handling.md)** - Result型、DomainError/InfrastructureError、境界層でのエラーハンドリング
+- 📖 **[code-quality-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/code-quality-patterns.md)** - 完全コンストラクタ、イミュータビリティ、引数/戻り値
+- 📖 **[testing-patterns.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/testing-patterns.md)** - テスト戦略、命名規則、Test Data Factory、テストダブル
+- 📖 **[language-guides.md](https://github.com/NAM-MAN/strict-refactoring-plugin/blob/main/skills/language-guides.md)** - 言語別緩和ルール（Go/Rust等）、フレームワーク別ガイダンス、ディレクトリ構造
+- 📖 **[examples/](https://github.com/NAM-MAN/strict-refactoring-plugin/tree/main/examples)** - プロジェクト別CLAUDE.md例
 
 > **注意**: プラグインとしてインストールされるのは `SKILL.md` と `generate-claude-md/SKILL.md` のみです。その他の詳細ドキュメント（WHY.md、*patterns.mdなど）はGitHubリポジトリで参照してください。
 
@@ -118,5 +118,5 @@ A: [INSTALL.md](INSTALL.md) の「🔍 トラブルシューティング」セ�
 
 ### Q: 詳細なドキュメント（WHY.mdやpatterns.md）はどこにありますか？
 
-A: 詳細なドキュメントはインストールされません。[GitHubリポジトリ](https://github.com/yy/strict-refactoring-plugin) で参照してください。SKILL.mdには各ルールの概要とチェックリストのみ含まれています。
+A: 詳細なドキュメントはインストールされません。[GitHubリポジトリ](https://github.com/NAM-MAN/strict-refactoring-plugin) で参照してください。SKILL.mdには各ルールの概要とチェックリストのみ含まれています。
 
