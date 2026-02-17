@@ -197,7 +197,7 @@ describe('RingiApproval', () => {
   beforeEach(async () => { tx = await testDb.beginTransaction(); });
   afterEach(async () => { await tx.rollback(); });
 
-  it('SubmittedRingi を承認すると ApprovedRingiとして取得できるべき', async () => {
+  it('SubmittedRingi を承認すると ApprovedRingiとして記録されるべき', async () => {
     const ringi = await RingiTestFactory.insertSubmitted(tx, { amount: Money.of(50000) });
     const repository = new PostgresRingiRepository(tx);
     const approved = await ringi.approve(repository);
